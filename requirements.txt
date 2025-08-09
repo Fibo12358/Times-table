@@ -1,6 +1,1 @@
-
----
-
-### `requirements.txt`
-```txt
-streamlit>=1.34,<2.0
+streamlit

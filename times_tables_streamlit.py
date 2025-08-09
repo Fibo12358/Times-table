@@ -1,4 +1,4 @@
-# times_tables_streamlit.py — responsive/mobile-friendly
+# times_tables_streamlit.py — responsive, keypad locked to 3-abreast
 import streamlit as st
 import time, random
 
@@ -56,16 +56,19 @@ st.markdown("""
   .stButton>button{ min-height:52px; font-size:1rem; }
 }
 
-/* Force the KEYPAD to stay 3-abreast on narrow screens */
-.kp-wrap [data-testid="stHorizontalBlock"]{
-  display: grid !important;
-  grid-template-columns: repeat(3, minmax(0,1fr)) !important;
-  gap: .5rem !important;
+/* KEY: lock keypad container to 3-abreast using :has() sentinel */
+div[data-testid="stVerticalBlock"]:has(> .kp-sentinel)
+  div[data-testid="stHorizontalBlock"]{
+  display:grid !important;
+  grid-template-columns:repeat(3, minmax(0,1fr)) !important;
+  gap:.5rem !important;
 }
-.kp-wrap [data-testid="column"]{
-  width: auto !important;
-  flex: 0 0 auto !important;
-  padding: 0 !important;
+/* Make the column wrappers play nicely inside our grid */
+div[data-testid="stVerticalBlock"]:has(> .kp-sentinel)
+  div[data-testid="stHorizontalBlock"] > div[data-testid="column"]{
+  width:auto !important;
+  flex:0 0 auto !important;
+  padding:0 !important;
 }
 
 /* Shake effect on wrong */
@@ -205,7 +208,7 @@ def _bar(label:str, percent:int, colour_hex:str, caption:str=""):
 _init_state()
 st.title("Times Tables Trainer")
 
-# Inline controls (visible on mobile). Sidebar omitted to avoid confusion on phones.
+# Inline controls
 with st.container():
     c1, c2 = st.columns([1,1])
     with c1:
@@ -232,11 +235,9 @@ with st.container():
             secs = st.number_input("Session seconds", 0, 59, value=st.session_state.total_seconds % 60, step=1)
         st.session_state.total_seconds = int(mins)*60 + int(secs)
 
-# Placeholders to render bars once
+# Bars
 qbar_ph = st.empty()
 now_ts = _now()
-
-# TOP: question timer
 if st.session_state.running:
     q_left_s = st.session_state.q_deadline - now_ts
     q_pct = round(100 * q_left_s / max(1, st.session_state.per_q))
@@ -248,7 +249,6 @@ else:
 if st.session_state.running:
     _tick(now_ts)
 
-    # Commit the correct result after green-dashed confirmation
     if st.session_state.pending_correct and now_ts >= st.session_state.ok_until:
         st.session_state.pending_correct = False
         _record_question(True, False)
@@ -283,19 +283,20 @@ if st.session_state.running:
     st.markdown(f"<div class='{' '.join(classes)}'>{st.session_state.entry or '&nbsp;'}</div>", unsafe_allow_html=True)
     st.markdown(f"<div class='subtle'>Auto-submit after <b>{_required_digits()}</b> digit{'s' if _required_digits()>1 else ''}</div>", unsafe_allow_html=True)
 
-    # Keypad (3×4 grid) — forced 3-abreast via .kp-wrap CSS
-    st.markdown('<div class="kp-wrap">', unsafe_allow_html=True)
-    kp_cols = st.columns(3, gap="small")
-    keys = ["1","2","3","4","5","6","7","8","9","C","0","⌫"]
-    for i, key in enumerate(keys):
-        col = kp_cols[i % 3]
-        if key.isdigit():
-            col.button(key, use_container_width=True, type="primary", on_click=_kp_append, args=(key,))
-        elif key == "C":
-            col.button("C", use_container_width=True, type="secondary", on_click=_kp_clear)
-        elif key == "⌫":
-            col.button("⌫", use_container_width=True, type="secondary", on_click=_kp_backspace)
-    st.markdown('</div>', unsafe_allow_html=True)
+    # Keypad — REAL Streamlit container with sentinel so CSS can target it
+    kp_container = st.container()
+    with kp_container:
+        st.markdown('<span class="kp-sentinel"></span>', unsafe_allow_html=True)  # sentinel for :has()
+        kp_cols = st.columns(3, gap="small")
+        keys = ["1","2","3","4","5","6","7","8","9","C","0","⌫"]
+        for i, key in enumerate(keys):
+            col = kp_cols[i % 3]
+            if key.isdigit():
+                col.button(key, use_container_width=True, type="primary", on_click=_kp_append, args=(key,))
+            elif key == "C":
+                col.button("C", use_container_width=True, type="secondary", on_click=_kp_clear)
+            elif key == "⌫":
+                col.button("⌫", use_container_width=True, type="secondary", on_click=_kp_backspace)
 
     st.caption(f"Answered: {st.session_state.total_questions}  |  Correct: {st.session_state.correct_questions}")
 
@@ -330,7 +331,7 @@ if st.session_state.finished:
     if st.button("Start a new session", type="primary"):
         _start_session()
 
-# Bottom session timer (single render)
+# Bottom session timer
 sbar_ph = st.empty()
 if st.session_state.running:
     sess_left_s = st.session_state.deadline - now_ts
@@ -345,5 +346,5 @@ if st.session_state.needs_rerun:
     st.session_state.needs_rerun = False
     st.rerun()
 elif st.session_state.running:
-    time.sleep(1)  # 1s tick
+    time.sleep(1)
     st.rerun()

@@ -2,6 +2,8 @@
 import streamlit as st
 import time, random
 
+APP_VERSION = "v1.1.0"  # increment this on each revision
+
 MULTIPLIERS = list(range(1, 13))  # 1..12
 
 st.set_page_config(page_title="Times Tables Trainer", page_icon="✳️", layout="centered")
@@ -56,18 +58,16 @@ st.markdown("""
   .stButton>button{ min-height:52px; font-size:1rem; }
 }
 
-/* KEY: lock keypad container to 3-abreast using :has() sentinel */
-div[data-testid="stVerticalBlock"]:has(> .kp-sentinel)
-  div[data-testid="stHorizontalBlock"]{
-  display:grid !important;
-  grid-template-columns:repeat(3, minmax(0,1fr)) !important;
+/* Keep KEYPAD rows 3-abreast on all widths */
+.kp-wrap div[data-testid="stHorizontalBlock"]{
+  display:flex !important;
+  flex-wrap:nowrap !important;         /* don't stack columns */
   gap:.5rem !important;
 }
-/* Make the column wrappers play nicely inside our grid */
-div[data-testid="stVerticalBlock"]:has(> .kp-sentinel)
-  div[data-testid="stHorizontalBlock"] > div[data-testid="column"]{
-  width:auto !important;
-  flex:0 0 auto !important;
+.kp-wrap div[data-testid="stHorizontalBlock"] > div[data-testid="column"]{
+  width:33.3333% !important;
+  min-width:0 !important;
+  flex:0 0 33.3333% !important;
   padding:0 !important;
 }
 
@@ -79,6 +79,12 @@ div[data-testid="stVerticalBlock"]:has(> .kp-sentinel)
   40%,60%{transform:translateX(4px);}
 }
 .shake{ animation:shake .4s linear both; }
+
+/* Discreet version badge, fixed bottom-centre */
+.version-badge{
+  position:fixed; bottom:6px; left:50%; transform:translateX(-50%);
+  font-size:.75rem; color:#94a3b8; opacity:.85; pointer-events:none;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -283,20 +289,26 @@ if st.session_state.running:
     st.markdown(f"<div class='{' '.join(classes)}'>{st.session_state.entry or '&nbsp;'}</div>", unsafe_allow_html=True)
     st.markdown(f"<div class='subtle'>Auto-submit after <b>{_required_digits()}</b> digit{'s' if _required_digits()>1 else ''}</div>", unsafe_allow_html=True)
 
-    # Keypad — REAL Streamlit container with sentinel so CSS can target it
-    kp_container = st.container()
-    with kp_container:
-        st.markdown('<span class="kp-sentinel"></span>', unsafe_allow_html=True)  # sentinel for :has()
-        kp_cols = st.columns(3, gap="small")
-        keys = ["1","2","3","4","5","6","7","8","9","C","0","⌫"]
-        for i, key in enumerate(keys):
-            col = kp_cols[i % 3]
+    # Keypad — four explicit rows, each forced to 3-abreast
+    st.markdown('<div class="kp-wrap">', unsafe_allow_html=True)
+
+    def _row(labels):
+        cols = st.columns(3, gap="small")
+        for i, key in enumerate(labels):
+            col = cols[i]
             if key.isdigit():
                 col.button(key, use_container_width=True, type="primary", on_click=_kp_append, args=(key,))
             elif key == "C":
                 col.button("C", use_container_width=True, type="secondary", on_click=_kp_clear)
             elif key == "⌫":
                 col.button("⌫", use_container_width=True, type="secondary", on_click=_kp_backspace)
+
+    _row(["1","2","3"])
+    _row(["4","5","6"])
+    _row(["7","8","9"])
+    _row(["C","0","⌫"])
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
     st.caption(f"Answered: {st.session_state.total_questions}  |  Correct: {st.session_state.correct_questions}")
 
@@ -341,10 +353,13 @@ if st.session_state.running:
 else:
     with sbar_ph: _bar("Session time", 0, "var(--teal)", "Time left: 00:00")
 
+# Discreet version badge (fixed bottom)
+st.markdown(f"<div class='version-badge'>Times Tables Trainer {APP_VERSION}</div>", unsafe_allow_html=True)
+
 # Main-thread refresh loop
 if st.session_state.needs_rerun:
     st.session_state.needs_rerun = False
     st.rerun()
 elif st.session_state.running:
-    time.sleep(1)
+    time.sleep(1)  # 1s tick
     st.rerun()

@@ -1,23 +1,31 @@
-# times_tables_streamlit.py — responsive, keypad locked to 3-abreast
+# times_tables_streamlit.py — 3-across HTML keypad; gap-aware; version badge
 import streamlit as st
 import time, random
 
-APP_VERSION = "v1.1.0"  # increment this on each revision
-
+APP_VERSION = "v1.3.0"  # increment each revision
 MULTIPLIERS = list(range(1, 13))  # 1..12
 
 st.set_page_config(page_title="Times Tables Trainer", page_icon="✳️", layout="centered")
 
-# --------- Calm palette + responsive CSS ---------
+# ---------- Styles ----------
 st.markdown("""
 <style>
 :root{
-  --bg:#f8fafc; --text:#0f172a; --muted:#64748b;
+  /* calm dark palette */
+  --bg:#0b1220; --text:#f8fafc; --muted:#94a3b8;
   --blue:#60a5fa; --teal:#34d399;
   --ok-bg:#ecfdf5; --ok-bd:#16a34a; --ok-fg:#065f46;
   --bad-bg:#fef2f2; --bad-bd:#dc2626; --bad-fg:#7f1d1d;
+
+  /* keypad spacing variable (shrinks on narrow screens) */
+  --kp-gap: 8px;
+  --btn-h: 64px;
 }
-/* Desktop: half width; Mobile: full width */
+@media (max-width: 680px){ :root{ --kp-gap: 6px; --btn-h: 64px; } }
+@media (max-width: 420px){ :root{ --kp-gap: 4px; --btn-h: 56px; } }
+
+html, body { background: var(--bg); color: var(--text); }
+
 .block-container{max-width:50% !important;}
 @media (max-width: 768px){
   .block-container{max-width:100% !important; padding-left:1rem; padding-right:1rem;}
@@ -25,62 +33,43 @@ st.markdown("""
 
 /* Answer pill */
 .answer-display{
-  font-size: 2.2rem; font-weight:700; text-align:center;
-  padding:.35rem .6rem; border:2px solid #e5e7eb; border-radius:.6rem;
-  background:#f9fafb; letter-spacing:.02em;
+  font-size:2.2rem; font-weight:700; text-align:center;
+  padding:.35rem .6rem; border:2px solid #334155; border-radius:.6rem;
+  background:#0f172a; color:var(--text); letter-spacing:.02em;
 }
-.answer-display.ok{ background:var(--ok-bg); border:3px dashed var(--ok-bd); color:var(--ok-fg); }
-.answer-display.bad{ background:var(--bad-bg); border:3px solid var(--bad-bd); color:var(--bad-fg); }
-.subtle{ color:var(--muted); font-size:0.95rem; text-align:center; }
+.answer-display.ok{ background:var(--ok-bg); border:3px dashed var(--ok-bd); color:var(--ok-fg);}
+.answer-display.bad{ background:var(--bad-bg); border:3px solid var(--bad-bd); color:var(--bad-fg);}
+.subtle{ color:var(--muted); font-size:.95rem; text-align:center; }
 
 /* Bars */
-.barwrap{ margin: .2rem 0 .6rem 0; }
-.barlabel{ font-size:.95rem; color:var(--text); margin-bottom:.25rem; }
-.barbg{ background:#e5e7eb; border-radius:8px; height:12px; overflow:hidden; }
+.barwrap{ margin:.2rem 0 .6rem 0;}
+.barlabel{ font-size:.95rem; color:var(--text); margin-bottom:.25rem;}
+.barbg{ background:#334155; border-radius:8px; height:12px; overflow:hidden;}
 .barfg{ height:100%; border-radius:8px; }
 
-/* Buttons / keypad */
-.stButton>button[kind="primary"]{
-  background:var(--blue) !important; color:white !important; border:none !important;
-  box-shadow:0 1px 2px rgba(0,0,0,.05);
+/* HTML keypad (no Streamlit columns) */
+.kp-grid{
+  width:100%;
+  display:grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--kp-gap);
 }
-.stButton>button[kind="secondary"]{
-  background:#e2e8f0 !important; color:#0f172a !important; border:none !important;
+.kp-btn{
+  display:flex; align-items:center; justify-content:center;
+  height: var(--btn-h);
+  font-size: 1.25rem; font-weight: 800; text-decoration:none;
+  border-radius: .6rem; border: 0; box-sizing: border-box;
+  user-select: none;
 }
-.stButton>button:hover{ filter:brightness(0.97); }
+.kp-btn.primary{ background: var(--blue); color: #0b1220; }
+.kp-btn.secondary{ background:#1f2937; color:#e5e7eb; border:1px solid #334155; }
+.kp-btn:active{ filter: brightness(0.95); }
 
-/* Keypad button sizing */
-.stButton>button{ min-height:56px; font-size:1.1rem; }
-@media (max-width: 768px){
-  .stButton>button{ min-height:64px; font-size:1.25rem; }
-}
-@media (max-width: 420px){
-  .stButton>button{ min-height:52px; font-size:1rem; }
-}
-
-/* Keep KEYPAD rows 3-abreast on all widths */
-.kp-wrap div[data-testid="stHorizontalBlock"]{
-  display:flex !important;
-  flex-wrap:nowrap !important;         /* don't stack columns */
-  gap:.5rem !important;
-}
-.kp-wrap div[data-testid="stHorizontalBlock"] > div[data-testid="column"]{
-  width:33.3333% !important;
-  min-width:0 !important;
-  flex:0 0 33.3333% !important;
-  padding:0 !important;
-}
-
-/* Shake effect on wrong */
-@keyframes shake{
-  10%,90%{transform:translateX(-1px);}
-  20%,80%{transform:translateX(2px);}
-  30%,50%,70%{transform:translateX(-4px);}
-  40%,60%{transform:translateX(4px);}
-}
+/* Shake effect */
+@keyframes shake{10%,90%{transform:translateX(-1px);}20%,80%{transform:translateX(2px);}30%,50%,70%{transform:translateX(-4px);}40%,60%{transform:translateX(4px);} }
 .shake{ animation:shake .4s linear both; }
 
-/* Discreet version badge, fixed bottom-centre */
+/* Version badge */
 .version-badge{
   position:fixed; bottom:6px; left:50%; transform:translateX(-50%);
   font-size:.75rem; color:#94a3b8; opacity:.85; pointer-events:none;
@@ -88,7 +77,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --------- State ---------
+# ---------- State ----------
 def _init_state():
     ss = st.session_state
     ss.setdefault("running", False)
@@ -96,7 +85,7 @@ def _init_state():
     ss.setdefault("min_table", 2)
     ss.setdefault("max_table", 12)
     ss.setdefault("total_seconds", 180)
-    ss.setdefault("per_q", 10)  # default question time 10s
+    ss.setdefault("per_q", 10)  # 10s default
     ss.setdefault("session_start", 0.0)
     ss.setdefault("deadline", 0.0)
     ss.setdefault("q_start", 0.0)
@@ -106,26 +95,24 @@ def _init_state():
     ss.setdefault("total_questions", 0)
     ss.setdefault("correct_questions", 0)
     ss.setdefault("total_time_spent", 0.0)
-
-    # spaced repetition & outcomes
+    # spaced repetition
     ss.setdefault("wrong_attempt_items", set())
     ss.setdefault("missed_items", set())
     ss.setdefault("wrong_twice", set())
-    ss.setdefault("attempts_wrong", {})          # (a,b) -> wrong count across questions
-    ss.setdefault("scheduled_repeats", [])       # [{'item':(a,b), 'remaining':n}]
-
+    ss.setdefault("attempts_wrong", {})
+    ss.setdefault("scheduled_repeats", [])
     # UI
     ss.setdefault("entry", "")
     ss.setdefault("needs_rerun", False)
     ss.setdefault("shake_until", 0.0)
     ss.setdefault("ok_until", 0.0)
     ss.setdefault("pending_correct", False)
+    ss.setdefault("last_kp_tok", "")
 
 def _now(): return time.monotonic()
 def _fmt_mmss(s):
     if s < 0: s = 0
-    m, s = divmod(int(round(s)), 60)
-    return f"{m:02d}:{s:02d}"
+    m, s = divmod(int(round(s)), 60); return f"{m:02d}:{s:02d}"
 def _required_digits(): return len(str(abs(st.session_state.a * st.session_state.b)))
 
 def _decrement_scheduled():
@@ -188,33 +175,25 @@ def _record_question(correct: bool, timed_out: bool):
 def _tick(now_ts: float):
     ss = st.session_state
     if not ss.running: return
-    if ss.pending_correct and now_ts < ss.ok_until: return  # show green dashed then advance
+    if ss.pending_correct and now_ts < ss.ok_until: return
     if now_ts >= ss.deadline: _end_session(); ss.needs_rerun = True; return
     if ss.awaiting_answer and now_ts >= ss.q_deadline: _record_question(False, True)
 
-# Keypad callbacks
-def _kp_append(d:str):
-    if st.session_state.awaiting_answer: st.session_state.entry += d
-def _kp_backspace():
-    if st.session_state.awaiting_answer: st.session_state.entry = st.session_state.entry[:-1]
-def _kp_clear():
-    if st.session_state.awaiting_answer: st.session_state.entry = ""
+# keypad actions (used by URL-param based keypad)
+def _kp_apply(code: str):
+    if not st.session_state.awaiting_answer: return
+    if code == "C":
+        st.session_state.entry = ""
+    elif code == "B":
+        st.session_state.entry = st.session_state.entry[:-1]
+    elif code.isdigit():
+        st.session_state.entry += code
 
-# Bar helper
-def _bar(label:str, percent:int, colour_hex:str, caption:str=""):
-    percent = max(0, min(100, int(percent)))
-    st.markdown(f"""
-    <div class="barwrap">
-      <div class="barlabel">{label}</div>
-      <div class="barbg"><div class="barfg" style="width:{percent}%; background:{colour_hex};"></div></div>
-      {f'<div class="subtle">{caption}</div>' if caption else ''}
-    </div>""", unsafe_allow_html=True)
-
-# --------- UI ---------
+# ---------- UI ----------
 _init_state()
 st.title("Times Tables Trainer")
 
-# Inline controls
+# Controls
 with st.container():
     c1, c2 = st.columns([1,1])
     with c1:
@@ -247,11 +226,44 @@ now_ts = _now()
 if st.session_state.running:
     q_left_s = st.session_state.q_deadline - now_ts
     q_pct = round(100 * q_left_s / max(1, st.session_state.per_q))
-    with qbar_ph: _bar("Question time", q_pct, "var(--blue)", f"Time left: {_fmt_mmss(q_left_s)}")
+    with qbar_ph:
+        st.markdown(
+            f"""<div class="barwrap"><div class="barlabel">Question time</div>
+            <div class="barbg"><div class="barfg" style="width:{q_pct}%; background:var(--blue);"></div></div>
+            <div class="subtle">Time left: {_fmt_mmss(q_left_s)}</div></div>""",
+            unsafe_allow_html=True
+        )
 else:
-    with qbar_ph: _bar("Question time", 0, "var(--blue)", "Time left: 00:00")
+    with qbar_ph:
+        st.markdown(
+            """<div class="barwrap"><div class="barlabel">Question time</div>
+            <div class="barbg"><div class="barfg" style="width:0%; background:var(--blue);"></div></div>
+            <div class="subtle">Time left: 00:00</div></div>""",
+            unsafe_allow_html=True
+        )
 
-# Main play area
+# Handle keypad URL params BEFORE main logic
+# Supports both new and old Streamlit query param APIs
+kp = None; tok = None
+try:
+    q = st.query_params
+    kp = q.get("kp"); tok = q.get("tok")
+except Exception:
+    q = st.experimental_get_query_params()
+    kp_list = q.get("kp", [None]); tok_list = q.get("tok", [None])
+    kp = kp_list[0]; tok = tok_list[0]
+
+if kp:
+    if tok != st.session_state.last_kp_tok:
+        _kp_apply(kp)
+        st.session_state.last_kp_tok = tok or ""
+        # clear params
+        try:
+            st.query_params.clear()
+        except Exception:
+            st.experimental_set_query_params()
+
+# Main area
 if st.session_state.running:
     _tick(now_ts)
 
@@ -289,26 +301,18 @@ if st.session_state.running:
     st.markdown(f"<div class='{' '.join(classes)}'>{st.session_state.entry or '&nbsp;'}</div>", unsafe_allow_html=True)
     st.markdown(f"<div class='subtle'>Auto-submit after <b>{_required_digits()}</b> digit{'s' if _required_digits()>1 else ''}</div>", unsafe_allow_html=True)
 
-    # Keypad — four explicit rows, each forced to 3-abreast
-    st.markdown('<div class="kp-wrap">', unsafe_allow_html=True)
+    # HTML keypad (always 3 columns)
+    nonce = str(int(time.time() * 1000))  # prevent duplicate handling
+    def btn(label, code, kind="primary"):
+        return f'<a class="kp-btn {kind}" href="?kp={code}&tok={nonce}">{label}</a>'
 
-    def _row(labels):
-        cols = st.columns(3, gap="small")
-        for i, key in enumerate(labels):
-            col = cols[i]
-            if key.isdigit():
-                col.button(key, use_container_width=True, type="primary", on_click=_kp_append, args=(key,))
-            elif key == "C":
-                col.button("C", use_container_width=True, type="secondary", on_click=_kp_clear)
-            elif key == "⌫":
-                col.button("⌫", use_container_width=True, type="secondary", on_click=_kp_backspace)
-
-    _row(["1","2","3"])
-    _row(["4","5","6"])
-    _row(["7","8","9"])
-    _row(["C","0","⌫"])
-
-    st.markdown("</div>", unsafe_allow_html=True)
+    grid = []
+    grid += [btn("1","1"), btn("2","2"), btn("3","3")]
+    grid += [btn("4","4"), btn("5","5"), btn("6","6")]
+    grid += [btn("7","7"), btn("8","8"), btn("9","9")]
+    grid += [btn("C","C","secondary"), btn("0","0"), btn("⌫","B","secondary")]
+    html = '<div class="kp-grid">' + "".join(grid) + '</div>'
+    st.markdown(html, unsafe_allow_html=True)
 
     st.caption(f"Answered: {st.session_state.total_questions}  |  Correct: {st.session_state.correct_questions}")
 
@@ -318,12 +322,10 @@ if st.session_state.finished:
     correct = st.session_state.correct_questions
     avg = (st.session_state.total_time_spent / total) if total else 0.0
     pct = (100.0 * correct / total) if total else 0.0
-
     st.subheader("Session report")
     st.write(f"Questions answered: **{total}**")
     st.write(f"Correct: **{correct}** ({pct:0.1f}%)")
     st.write(f"Average time per question: **{avg:0.2f}s**")
-
     wrong_any = sorted(list(st.session_state.wrong_attempt_items), key=lambda t: (t[0], t[1]))
     if wrong_any:
         st.write("Items you got wrong at least once:")
@@ -335,11 +337,6 @@ if st.session_state.finished:
             else:
                 lines.append(f"<div>• {a} × {b} = {prod}</div>")
         st.markdown("\n".join(lines), unsafe_allow_html=True)
-        csv = "a,b,answer,wrong_twice\n" + "\n".join([f"{a},{b},{a*b},{1 if (a,b) in st.session_state.wrong_twice else 0}" for a,b in wrong_any])
-        st.download_button("Download list (CSV)", data=csv, file_name="wrong_items.csv", mime="text/csv")
-    else:
-        st.success("You didn’t get any items wrong.")
-
     if st.button("Start a new session", type="primary"):
         _start_session()
 
@@ -348,18 +345,29 @@ sbar_ph = st.empty()
 if st.session_state.running:
     sess_left_s = st.session_state.deadline - now_ts
     sess_pct = round(100 * sess_left_s / max(1, st.session_state.total_seconds))
-    st.markdown("<hr style='border:none;height:1px;background:#e5e7eb;margin:.8rem 0'/>", unsafe_allow_html=True)
-    with sbar_ph: _bar("Session time", sess_pct, "var(--teal)", f"Time left: {_fmt_mmss(sess_left_s)}")
+    st.markdown("<hr style='border:none;height:1px;background:#334155;margin:.8rem 0'/>", unsafe_allow_html=True)
+    with sbar_ph:
+        st.markdown(
+            f"""<div class="barwrap"><div class="barlabel">Session time</div>
+            <div class="barbg"><div class="barfg" style="width:{sess_pct}%; background:var(--teal);"></div></div>
+            <div class="subtle">Time left: {_fmt_mmss(sess_left_s)}</div></div>""",
+            unsafe_allow_html=True
+        )
 else:
-    with sbar_ph: _bar("Session time", 0, "var(--teal)", "Time left: 00:00")
+    with sbar_ph:
+        st.markdown(
+            """<div class="barwrap"><div class="barlabel">Session time</div>
+            <div class="barbg"><div class="barfg" style="width:0%; background:var(--teal);"></div></div>
+            <div class="subtle">Time left: 00:00</div></div>""",
+            unsafe_allow_html=True
+        )
 
-# Discreet version badge (fixed bottom)
+# Version badge
 st.markdown(f"<div class='version-badge'>Times Tables Trainer {APP_VERSION}</div>", unsafe_allow_html=True)
 
-# Main-thread refresh loop
+# Refresh loop
 if st.session_state.needs_rerun:
     st.session_state.needs_rerun = False
     st.rerun()
 elif st.session_state.running:
-    time.sleep(1)  # 1s tick
-    st.rerun()
+    time.sleep(1); st.rerun()

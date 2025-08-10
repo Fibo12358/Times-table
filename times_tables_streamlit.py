@@ -622,13 +622,21 @@ def screen_practice():
 
     # --- Keypad (render first) ---
     with st.session_state._keypad_area.container():
+        # Reserve space so the keypad doesn't collapse while the custom
+        # component bootstraps. This avoids the keypad appearing "missing"
+        # on slow connections where the iframe reports its height late.
+        st.markdown("<div class='tt-keypad'>", unsafe_allow_html=True)
+
         payload = None
         if KP_COMPONENT_AVAILABLE:
             payload = keypad(default=None)  # "CODE|SEQ" or None
-            st.caption("Keypad: custom")
+            kp_kind = "custom"
         else:
             render_fallback_keypad()
-            st.caption("Keypad: fallback")
+            kp_kind = "fallback"
+
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.caption(f"Keypad: {kp_kind}")
 
     # Process keypad event (first-press fix)
     _handle_keypad_payload(payload)

@@ -1,6 +1,6 @@
 # times_tables_streamlit.py — 3 screens + keypad fallback + first-press + auto-submit fixes
 # SAFE MODE defaults ON (minimal CSS). Toggle it off on the Settings screen when you're ready.
-# Version: v1.10.9
+# Version: v1.10.10
 
 import math
 import os
@@ -21,7 +21,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-APP_VERSION = "v1.10.9"
+APP_VERSION = "v1.10.10"
 
 # ---------------- Local storage helpers ----------------
 LS_COMPONENT_AVAILABLE = False
@@ -32,7 +32,7 @@ LS_FALLBACK_ALLOWED = True
 def _register_ls_component():
     """Register the localStorage component with a tiny retry and log errors."""
     global LS_COMPONENT_AVAILABLE, LS_LOAD_ERROR, ls_component
-    comp_dir = Path(__file__).with_name("ls_component")
+    comp_dir = Path(__file__).resolve().parent / "ls_component"
     for attempt in range(2):
         try:
             if comp_dir.exists() and (comp_dir / "index.html").exists():
@@ -307,7 +307,7 @@ KP_LOAD_ERROR = ""
 def _register_keypad_component():
     global KP_COMPONENT_AVAILABLE, KP_LOAD_ERROR, keypad
     try:
-        comp_dir = Path(__file__).with_name("keypad_component")
+        comp_dir = Path(__file__).resolve().parent / "keypad_component"
         if comp_dir.exists() and (comp_dir / "index.html").exists():
             keypad = declare_component("tt_keypad", path=str(comp_dir))  # returns "CODE|SEQ" or None
             KP_COMPONENT_AVAILABLE = True

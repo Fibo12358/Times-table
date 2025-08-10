@@ -1,0 +1,75 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>localstore</title>
+</head>
+<body>
+<script>
+const sendVal = (v)=>{
+  if (window.Streamlit && window.Streamlit.setComponentValue){
+    window.Streamlit.setComponentValue(v);
+  } else {
+    window.parent.postMessage({isStreamlitMessage:true,type:"streamlit:setComponentValue",value:v,apiVersion:1},"*");
+  }
+};
+const setReady = ()=>{
+  if (window.Streamlit && window.Streamlit.setComponentReady){
+    window.Streamlit.setComponentReady();
+    if(window.Streamlit.setFrameHeight) window.Streamlit.setFrameHeight(0);
+  } else {
+    window.parent.postMessage({isStreamlitMessage:true,type:"streamlit:componentReady",apiVersion:1},"*");
+    window.parent.postMessage({isStreamlitMessage:true,type:"streamlit:setFrameHeight",height:0,apiVersion:1},"*");
+  }
+};
+function doOp(req){
+  const op = req.op;
+  const key = req.key;
+  try{
+    if(op==="get"){
+      const raw = localStorage.getItem(key);
+      if(raw!==null){
+        try{
+          const data = JSON.parse(raw);
+          if(data.expires_at && new Date(data.expires_at) < new Date()){
+            localStorage.removeItem(key);
+            sendVal({ok:true,value:null});
+          }else{
+            sendVal({ok:true,value:data.value});
+          }
+        }catch(err){
+          localStorage.removeItem(key);
+          sendVal({ok:true,value:null});
+        }
+      }else{
+        sendVal({ok:true,value:null});
+      }
+    } else if(op==="set"){
+      const ttl = req.ttl_days || 30;
+      const expires = new Date(Date.now() + ttl*24*60*60*1000).toISOString();
+      const toStore = JSON.stringify({value:req.value,expires_at:expires});
+      localStorage.setItem(key,toStore);
+      sendVal({ok:true});
+    } else if(op==="remove"){
+      localStorage.removeItem(key);
+      sendVal({ok:true});
+    } else {
+      sendVal({ok:false,error:"unknown op"});
+    }
+  }catch(err){
+    console.error("localstore error",err);
+    sendVal({ok:false,error:String(err)});
+  }
+}
+window.addEventListener("message", (event)=>{
+  const msg = event.data;
+  if(msg && msg.type === "streamlit:render"){
+    const args = msg.args || {};
+    const req = args.payload || args; // allow direct or wrapped
+    if(req && req.op){ doOp(req); }
+  }
+});
+window.addEventListener("load", setReady);
+</script>
+</body>
+</html>

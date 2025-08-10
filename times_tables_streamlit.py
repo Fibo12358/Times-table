@@ -6,6 +6,9 @@ import math
 import time
 import random
 from pathlib import Path
+from uuid import uuid4
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 from streamlit.components.v1 import declare_component
@@ -80,7 +83,139 @@ def _init_state():
     ss.setdefault("pending_correct", False)
     ss.setdefault("last_kp_seq", -1)
 
+    ss.setdefault("session_mins", ss.total_seconds // 60)
+    ss.setdefault("session_secs", ss.total_seconds % 60)
+    ss.setdefault("streak", 0)
+
 _init_state()
+
+# ---------------- Local storage component ----------------
+def _register_localstore_component():
+    global localstore
+    comp_dir = Path(__file__).with_name("components").joinpath("localstore")
+    try:
+        if comp_dir.exists() and (comp_dir / "index.html").exists():
+            localstore = declare_component("localstore", path=str(comp_dir))
+        else:
+            def localstore(**kwargs):
+                return {"ok": True, "value": "__pending__"}
+    except Exception:
+        def localstore(**kwargs):
+            return {"ok": True, "value": "__pending__"}
+
+_register_localstore_component()
+
+SETTINGS_KEY = "tt.settings.v1"
+HISTORY_KEY = "tt.history.v1"
+STREAK_KEY = "tt.streak.v1"
+DEVICE_KEY = "tt.device_id.v1"
+
+def _ls_send(payload):
+    ss = st.session_state
+    call_id = ss.get("_ls_call_id", 0) + 1
+    ss["_ls_call_id"] = call_id
+    res = localstore(payload=payload, call_id=call_id, key="localstore", default={"ok": True, "value": "__pending__"})
+    if isinstance(res, dict) and res.get("value") == "__pending__":
+        ss.needs_rerun = True
+        return None
+    return res
+
+def ls_get(key):
+    res = _ls_send({"op": "get", "key": key})
+    if res and res.get("ok"):
+        return res.get("value")
+    return None
+
+def ls_set(key, value, ttl_days=30):
+    return _ls_send({"op": "set", "key": key, "value": value, "ttl_days": ttl_days})
+
+def ls_remove(key):
+    return _ls_send({"op": "remove", "key": key})
+
+def _get_device_id():
+    did = ls_get(DEVICE_KEY)
+    if did is None:
+        return None
+    if not did:
+        did = str(uuid4())
+        ls_set(DEVICE_KEY, did, ttl_days=3650)
+    return did
+
+def _load_settings():
+    ss = st.session_state
+    if ss.get("_settings_loaded"):
+        return
+    data = ls_get(SETTINGS_KEY)
+    if data is None:
+        return
+    ss["_settings_loaded"] = True
+    if data:
+        ss.user = data.get("user", ss.user)
+        ss.min_table = int(data.get("min", ss.min_table))
+        ss.max_table = int(data.get("max", ss.max_table))
+        ss.per_q = int(data.get("secs_per_q", ss.per_q))
+        ss.total_seconds = int(data.get("session_secs", ss.total_seconds))
+        ss.session_mins = ss.total_seconds // 60
+        ss.session_secs = ss.total_seconds % 60
+
+def _save_settings():
+    ss = st.session_state
+    did = _get_device_id()
+    if did is None:
+        return
+    exp = (datetime.utcnow() + timedelta(days=30)).isoformat()
+    data = {
+        "user": ss.user,
+        "min": int(ss.min_table),
+        "max": int(ss.max_table),
+        "secs_per_q": int(ss.per_q),
+        "session_secs": int(ss.total_seconds),
+        "device_id": did,
+        "expires_at": exp,
+    }
+    ls_set(SETTINGS_KEY, data)
+
+def _update_total_seconds():
+    ss = st.session_state
+    ss.total_seconds = int(ss.session_mins) * 60 + int(ss.session_secs)
+    _save_settings()
+
+def _save_session_results():
+    ss = st.session_state
+    pct = (ss.correct_questions / ss.total_questions) if ss.total_questions else 0.0
+    avg = (ss.total_time_spent / ss.total_questions) if ss.total_questions else 0.0
+    entry = {
+        "ts_iso_utc": datetime.utcnow().isoformat(),
+        "pct": pct,
+        "avg": avg,
+        "q": ss.total_questions,
+        "secs": ss.total_seconds,
+    }
+    hist = ls_get(HISTORY_KEY) or []
+    hist.append(entry)
+    if len(hist) > 10:
+        hist = hist[-10:]
+    ls_set(HISTORY_KEY, hist)
+
+    today = datetime.now(ZoneInfo("Europe/London")).date()
+    streak_data = ls_get(STREAK_KEY) or {}
+    last = streak_data.get("last_completed_date")
+    streak = streak_data.get("streak", 0)
+    if last == today.isoformat():
+        pass
+    else:
+        try:
+            last_date = datetime.strptime(last, "%Y-%m-%d").date() if last else None
+        except Exception:
+            last_date = None
+        if last_date == today - timedelta(days=1):
+            streak += 1
+        else:
+            streak = 1
+    ls_set(STREAK_KEY, {"last_completed_date": today.isoformat(), "streak": streak})
+    ss.streak = streak
+
+_load_settings()
 
 # ---------------- Keypad component (with fallback) ----------------
 KP_COMPONENT_AVAILABLE = False
@@ -253,6 +388,7 @@ def _tick(now_ts: float):
     if not ss.running: return
     if ss.pending_correct and now_ts < ss.ok_until: return
     if now_ts >= ss.deadline:
+        _save_session_results()
         _end_session(); return
     if ss.awaiting_answer and now_ts >= ss.q_deadline:
         _record_question(False, True)
@@ -323,24 +459,25 @@ def screen_settings():
 
     c1, c2 = st.columns([1, 1], gap="small")
     with c1:
-        st.session_state.user = st.text_input("User", st.session_state.user, max_chars=32, placeholder="Name or ID")
-        st.session_state.min_table = int(st.number_input("Min table", 1, 12, value=st.session_state.min_table, step=1))
+        st.text_input("User", key="user", max_chars=32, placeholder="Name or ID", on_change=_save_settings)
+        st.number_input("Min table", 1, 12, key="min_table", step=1, on_change=_save_settings)
     with c2:
-        st.session_state.max_table = int(st.number_input("Max table", 1, 12, value=st.session_state.max_table, step=1))
-        st.session_state.per_q = int(st.number_input("Seconds per question", 2, 30, value=st.session_state.per_q, step=1))
+        st.number_input("Max table", 1, 12, key="max_table", step=1, on_change=_save_settings)
+        st.number_input("Seconds per question", 2, 30, key="per_q", step=1, on_change=_save_settings)
 
     c3, c4 = st.columns([1, 1], gap="small")
     with c3:
-        mins = st.number_input("Session minutes", 0, 180, value=st.session_state.total_seconds // 60, step=1)
-        secs = st.number_input("Session seconds", 0, 59, value=st.session_state.total_seconds % 60, step=1)
-        st.session_state.total_seconds = int(mins) * 60 + int(secs)
+        st.number_input("Session minutes", 0, 180, key="session_mins", step=1, on_change=_update_total_seconds)
+        st.number_input("Session seconds", 0, 59, key="session_secs", step=1, on_change=_update_total_seconds)
     with c4:
         st.write("")
         if st.button("Start", type="primary", use_container_width=True):
+            _save_settings()
             _start_session(); st.rerun()
 
     if st.session_state.min_table > st.session_state.max_table:
         st.session_state.min_table, st.session_state.max_table = st.session_state.max_table, st.session_state.min_table
+        _save_settings()
 
 def screen_practice():
     now_ts = _now()
@@ -420,6 +557,11 @@ def screen_report():
             st.write(f"{a} × {b}{extra}")
     else:
         st.write("None.")
+
+    st.markdown(
+        f"<div class='tt-streak'>Streak: {st.session_state.streak} day{'s' if st.session_state.streak != 1 else ''}</div>",
+        unsafe_allow_html=True,
+    )
 
     c1, c2 = st.columns(2, gap="small")
     with c1:

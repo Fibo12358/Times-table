@@ -11,3 +11,8 @@ A calm, keypad-first trainer for multiplication tables:
 ```bash
 python3 -m pip install -r requirements.txt
 python3 -m streamlit run times_tables_streamlit.py
+```
+
+## Local data
+
+The app stores your settings, streak and the last 10 session summaries in your browser's local storage. Each entry expires after 30 days. To reset, clear the site's data via your browser's storage settings or developer tools.

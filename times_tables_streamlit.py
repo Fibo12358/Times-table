@@ -1,19 +1,43 @@
 # times_tables_streamlit.py — 3 screens + keypad fallback + first-press + auto-submit fixes
 # SAFE MODE defaults ON (minimal CSS). Toggle it off on the Settings screen when you're ready.
-# Version: v1.10.8
+# Version: v1.10.9
 
 import math
 import time
 import random
 from pathlib import Path
 from datetime import datetime, timedelta
+from uuid import uuid4
 
 import streamlit as st
 from streamlit.components.v1 import declare_component
 
-APP_VERSION = "v1.10.8"
+APP_VERSION = "v1.10.9"
 
-# ---------------- Local storage helpers (Slice 2 stubs) ----------------
+# ---------------- Local storage helpers ----------------
+LS_COMPONENT_AVAILABLE = False
+LS_LOAD_ERROR = ""
+
+def _register_ls_component():
+    global LS_COMPONENT_AVAILABLE, LS_LOAD_ERROR, ls_component
+    try:
+        comp_dir = Path(__file__).with_name("ls_component")
+        if comp_dir.exists() and (comp_dir / "index.html").exists():
+            ls_component = declare_component("tt_ls", path=str(comp_dir))
+            LS_COMPONENT_AVAILABLE = True
+        else:
+            LS_COMPONENT_AVAILABLE = False
+            LS_LOAD_ERROR = f"LocalStorage component not found at: {comp_dir}/index.html"
+            def ls_component(**kwargs):
+                return None
+    except Exception as e:
+        LS_COMPONENT_AVAILABLE = False
+        LS_LOAD_ERROR = f"{type(e).__name__}: {e}"
+        def ls_component(**kwargs):
+            return None
+
+_register_ls_component()
+
 def _ls_store():
     if "_ls" not in st.session_state:
         st.session_state._ls = {}
@@ -21,11 +45,121 @@ def _ls_store():
 
 
 def ls_get(key):
+    if LS_COMPONENT_AVAILABLE:
+        return ls_component(action="get", key=key, default=None)
     return _ls_store().get(key)
 
 
 def ls_set(key, value, ttl_days=30):
+    if LS_COMPONENT_AVAILABLE:
+        return ls_component(action="set", key=key, value=value, ttl_days=ttl_days, default=None)
     _ls_store()[key] = value
+    return True
+
+
+def ls_remove(key):
+    if LS_COMPONENT_AVAILABLE:
+        return ls_component(action="remove", key=key, default=None)
+    _ls_store().pop(key, None)
+    return True
+
+
+def iso_now_plus_days(days: int) -> str:
+    return (datetime.utcnow() + timedelta(days=days)).isoformat()
+
+
+def ensure_device_id() -> str:
+    ss = st.session_state
+    if ss.get("device_id"):
+        return ss.device_id
+    val = ls_get("tt.device_id.v1")
+    if isinstance(val, dict):
+        dev = val.get("id")
+    elif isinstance(val, str):
+        dev = val
+    else:
+        dev = None
+    if not dev:
+        dev = uuid4().hex
+        ls_set("tt.device_id.v1", {"id": dev}, ttl_days=3650)
+    ss.device_id = dev
+    return dev
+
+
+def persist_settings():
+    ss = st.session_state
+    obj = {
+        "user": ss.user,
+        "min": int(ss.min_table),
+        "max": int(ss.max_table),
+        "secs_per_q": float(ss.per_q),
+        "session_secs": int(ss.total_seconds),
+        "device_id": ensure_device_id(),
+        "expires_at": iso_now_plus_days(30),
+    }
+    ls_set("tt.settings.v1", obj, ttl_days=30)
+
+
+def load_settings_on_boot():
+    ss = st.session_state
+    obj = ls_get("tt.settings.v1")
+    if isinstance(obj, dict):
+        if isinstance(obj.get("user"), str):
+            ss.user = obj["user"]
+        if isinstance(obj.get("min"), int):
+            ss.min_table = max(1, min(12, int(obj["min"])))
+        if isinstance(obj.get("max"), int):
+            ss.max_table = max(1, min(12, int(obj["max"])))
+        if isinstance(obj.get("secs_per_q"), (int, float)):
+            ss.per_q = float(obj["secs_per_q"])
+        if isinstance(obj.get("session_secs"), int):
+            ss.total_seconds = max(0, int(obj["session_secs"]))
+    ss.session_mins = ss.total_seconds // 60
+    ss.session_secs = ss.total_seconds % 60
+    ss.did_boot_load = True
+
+
+def _update_session_duration():
+    ss = st.session_state
+    ss.total_seconds = int(ss.session_mins) * 60 + int(ss.session_secs)
+    persist_settings()
+
+
+def render_debug_panel():
+    info = ls_component(action="info", key="tt.settings.v1", default={}) if LS_COMPONENT_AVAILABLE else {}
+    st.write("#### Storage debug")
+    if info.get("origin"):
+        st.text(f"Origin: {info.get('origin')}")
+    if info.get("port"):
+        st.text(f"Port: {info.get('port')}")
+    st.text(
+        "localStorage available: "
+        + str(info.get("ls_ok"))
+        + (f" ({info.get('ls_error')})" if info.get("ls_error") else "")
+    )
+    st.text(f"Now (UTC): {info.get('now')}")
+    st.write("Stored tt.settings.v1:")
+    st.json(info.get("stored"))
+    cols = st.columns(2)
+    with cols[0]:
+        if st.button("Self-test"):
+            nonce = uuid4().hex
+            ls_set("tt.test.v1", {"nonce": nonce}, ttl_days=1)
+            st.session_state._debug_nonce = nonce
+            st.rerun()
+    with cols[1]:
+        if st.button("Clear settings"):
+            ls_remove("tt.settings.v1")
+            st.rerun()
+    if "_debug_nonce" in st.session_state:
+        test = ls_get("tt.test.v1")
+        if test and test.get("nonce") == st.session_state._debug_nonce:
+            st.success("Self-test passed")
+        else:
+            st.error("Self-test failed")
+    st.caption("localStorage is per origin (host + port). On port change, storage appears empty.")
+    st.write("Python view:")
+    st.json(ls_get("tt.settings.v1"))
 
 # ---------------- Page config ----------------
 st.set_page_config(page_title="Times Tables Trainer", page_icon="✳️",
@@ -47,7 +181,6 @@ QP_SAFE = str(_qp_safe).lower() in ("1", "true")
 # ---------------- State ----------------
 def _init_state():
     ss = st.session_state
-    settings = ls_get("tt.settings.v1") or {}
 
     # Safe mode flag (ON by default)
     ss.setdefault("safe_mode", True if QP_SAFE else False)
@@ -59,12 +192,15 @@ def _init_state():
     ss.setdefault("running", False)
     ss.setdefault("finished", False)
 
-    # Settings
-    ss.setdefault("user", settings.get("user", ""))
-    ss.setdefault("min_table", settings.get("min", 2))
-    ss.setdefault("max_table", settings.get("max", 12))
-    ss.setdefault("total_seconds", settings.get("session_secs", 180))
-    ss.setdefault("per_q", float(settings.get("secs_per_q", 10.0)))  # per-question seconds
+    # Settings defaults
+    ss.setdefault("user", "")
+    ss.setdefault("min_table", 2)
+    ss.setdefault("max_table", 12)
+    ss.setdefault("total_seconds", 180)
+    ss.setdefault("per_q", 10.0)  # per-question seconds
+    ss.setdefault("session_mins", ss.total_seconds // 60)
+    ss.setdefault("session_secs", ss.total_seconds % 60)
+    ss.setdefault("did_boot_load", False)
 
     # Timers
     ss.setdefault("session_start", 0.0)
@@ -98,6 +234,8 @@ def _init_state():
     ss.setdefault("last_kp_seq", -1)
 
 _init_state()
+if not st.session_state.did_boot_load:
+    load_settings_on_boot()
 
 # ---------------- Keypad component (with fallback) ----------------
 KP_COMPONENT_AVAILABLE = False
@@ -373,35 +511,34 @@ def screen_settings():
 
     c1, c2 = st.columns([1, 1], gap="small")
     with c1:
-        st.session_state.user = st.text_input("User", st.session_state.user, max_chars=32, placeholder="Name or ID")
-        st.session_state.min_table = int(st.number_input("Min table", 1, 12, value=st.session_state.min_table, step=1))
+        st.text_input("User", max_chars=32, placeholder="Name or ID", key="user", on_change=persist_settings)
+        st.number_input("Min table", 1, 12, step=1, key="min_table", on_change=persist_settings)
     with c2:
-        st.session_state.max_table = int(st.number_input("Max table", 1, 12, value=st.session_state.max_table, step=1))
-        st.session_state.per_q = round(
-            float(
-                st.number_input(
-                    "Seconds per question",
-                    2.0,
-                    30.0,
-                    value=float(st.session_state.per_q),
-                    step=0.5,
-                )
-            ),
-            1,
+        st.number_input("Max table", 1, 12, step=1, key="max_table", on_change=persist_settings)
+        st.number_input(
+            "Seconds per question",
+            2.0,
+            30.0,
+            step=0.5,
+            key="per_q",
+            on_change=persist_settings,
         )
 
     c3, c4 = st.columns([1, 1], gap="small")
     with c3:
-        mins = st.number_input("Session minutes", 0, 180, value=st.session_state.total_seconds // 60, step=1)
-        secs = st.number_input("Session seconds", 0, 59, value=st.session_state.total_seconds % 60, step=1)
-        st.session_state.total_seconds = int(mins) * 60 + int(secs)
+        st.number_input("Session minutes", 0, 180, step=1, key="session_mins", on_change=_update_session_duration)
+        st.number_input("Session seconds", 0, 59, step=1, key="session_secs", on_change=_update_session_duration)
     with c4:
         st.write("")
         if st.button("Start", type="primary", use_container_width=True):
-            _start_session(); st.rerun()
+            persist_settings(); _start_session(); st.rerun()
 
     if st.session_state.min_table > st.session_state.max_table:
         st.session_state.min_table, st.session_state.max_table = st.session_state.max_table, st.session_state.min_table
+
+    st.session_state.show_debug = st.toggle("Debug storage", value=st.session_state.get("show_debug", False))
+    if st.session_state.show_debug:
+        render_debug_panel()
 
 def screen_practice():
     now_ts = _now()

@@ -17,3 +17,7 @@ python3 -m streamlit run times_tables_streamlit.py
 ## Mobile layout
 
 The app keeps four keypad rows visible on phones like the Pixel 7a/9a by removing non‑essential chrome, shrinking the timers, using dynamic viewport units (`100dvh` with a `100vh` fallback), and clamping the keypad pane to `height: clamp(248px, 40dvh, 320px)`.
+
+## Local data & TTL
+
+The app stores your settings in the browser's `localStorage` under `tt.settings.v1`. Each change or start refreshes a 30‑day expiry. Data is scoped per device/browser and, in development, per port. If Streamlit restarts on a new port, previous settings won't be found (normal). To inspect or clear data, open the **Settings** screen, enable **Debug storage**, and use the provided buttons.

@@ -1,0 +1,88 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>LS</title>
+</head>
+<body>
+<script>
+const send = (v)=>{
+  if (window.Streamlit && window.Streamlit.setComponentValue){
+    window.Streamlit.setComponentValue(v);
+  } else {
+    window.parent.postMessage({isStreamlitMessage:true, type:"streamlit:setComponentValue", value:v, apiVersion:1}, "*");
+  }
+};
+const ready = ()=>{
+  if (window.Streamlit && window.Streamlit.setComponentReady){
+    window.Streamlit.setComponentReady();
+  } else {
+    window.parent.postMessage({isStreamlitMessage:true, type:"streamlit:componentReady", apiVersion:1}, "*");
+  }
+  if (window.Streamlit && window.Streamlit.setFrameHeight){
+    window.Streamlit.setFrameHeight(0);
+  } else {
+    window.parent.postMessage({isStreamlitMessage:true, type:"streamlit:setFrameHeight", height:0, apiVersion:1}, "*");
+  }
+};
+window.addEventListener("message", (e)=>{
+  const d = e.data || {};
+  if (d.type === "streamlit:render"){
+    const args = d.args || {};
+    const action = args.action;
+    const key = args.key;
+    let result = null;
+    try{
+      if (action === "get"){
+        const raw = localStorage.getItem(key);
+        if (!raw){
+          result = null;
+        } else {
+          const obj = JSON.parse(raw);
+          if (obj && obj.expires_at && Date.parse(obj.expires_at) < Date.now()){
+            localStorage.removeItem(key);
+            result = null;
+          } else {
+            result = obj;
+          }
+        }
+      } else if (action === "set"){
+        let val = args.value || {};
+        if (args.ttl_days){
+          val.expires_at = new Date(Date.now() + args.ttl_days*86400000).toISOString();
+        }
+        localStorage.setItem(key, JSON.stringify(val));
+        result = true;
+      } else if (action === "remove"){
+        localStorage.removeItem(key);
+        result = true;
+      } else if (action === "info"){
+        let ls_ok = true, ls_error = null;
+        try{
+          localStorage.setItem("__tt_probe","1");
+          localStorage.removeItem("__tt_probe");
+        }catch(err){ ls_ok = false; ls_error = err.message; }
+        let stored = null;
+        try{
+          const raw = localStorage.getItem(key);
+          stored = raw ? JSON.parse(raw) : null;
+        }catch(err){}
+        result = {
+          origin: window.location.origin,
+          port: window.location.port || "",
+          now: new Date().toISOString(),
+          ls_ok: ls_ok,
+          ls_error: ls_error,
+          stored: stored
+        };
+      }
+    }catch(err){
+      result = {error: err.message};
+    }
+    send(result);
+  }
+});
+ready();
+</script>
+</body>
+</html>

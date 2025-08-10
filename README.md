@@ -16,4 +16,4 @@ python3 -m streamlit run times_tables_streamlit.py
 
 ## Mobile layout
 
-The app uses dynamic viewport units (`100dvh` with a `100vh` fallback) and clamps the keypad area to `height: clamp(260px, 38dvh, 340px)` to keep all four rows visible on phones like the Pixel 7a/9a.
+The app keeps four keypad rows visible on phones like the Pixel 7a/9a by removing non‑essential chrome, shrinking the timers, using dynamic viewport units (`100dvh` with a `100vh` fallback), and clamping the keypad pane to `height: clamp(248px, 40dvh, 320px)`.

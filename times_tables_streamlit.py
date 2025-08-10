@@ -1,6 +1,6 @@
 # times_tables_streamlit.py — 3 screens + keypad fallback + first-press + auto-submit fixes
 # SAFE MODE defaults ON (minimal CSS). Toggle it off on the Settings screen when you're ready.
-# Version: v1.10.7
+# Version: v1.10.8
 
 import math
 import time
@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import streamlit as st
 from streamlit.components.v1 import declare_component
 
-APP_VERSION = "v1.10.7"
+APP_VERSION = "v1.10.8"
 
 # ---------------- Local storage helpers (Slice 2 stubs) ----------------
 def _ls_store():
@@ -128,35 +128,32 @@ if not st.session_state.safe_mode:
     st.markdown("""
     <style>
     div[data-testid="stToolbar"], div[data-testid="stDecoration"], header, footer, #MainMenu { display: none !important; }
-    html, body, [data-testid="stAppViewContainer"] { height: 100dvh; overflow: hidden; }
-    @supports not (height: 100dvh) {
-      html, body, [data-testid="stAppViewContainer"] { height: 100vh; }
-      .tt-screen { height: 100vh; }
-    }
-    .block-container{ max_width: 460px !important; max-width: 460px !important; padding-top:0; padding-bottom:0; padding-left:12px; padding-right:12px; }
-    .tt-screen { height: 100dvh; box-sizing: border-box; display:flex; flex-direction:column; }
-    .tt-settings { padding: 12px 14px 10px; gap: 8px; }
-    .tt-header { min-height:56px; height:56px; display:flex; align-items:center; gap:8px; }
-    .tt-header * { margin:0; }
-    .tt-prompt { flex: 1 1 auto; display:flex; align-items:center; justify-content:center; }
-    .tt-keypad { height: clamp(260px, 38dvh, 340px); }
-    .tt-report { padding: 10px 14px; display:flex; flex-direction:column; gap:10px; overflow:hidden; }
-    .tt-metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
-    .tt-list { flex:1 1 auto; overflow:auto; border-top:1px solid #334155; padding-top:8px; }
-    .tt-spark { height:120px; }
-    .tt-streak { text-align:center; font-weight:600; }
-    :root{ --bg:#0b1220; --text:#f8fafc; --muted:#94a3b8; --blue:#60a5fa; --ok-bg:#ecfdf5; --ok-bd:#16a34a; --ok-fg:#065f46; --bad-bg:#fef2f2; --bad-bd:#dc2626; --bad-fg:#7f1d1d; }
-    html, body { background: var(--bg); color: var(--text); }
-    .tt-timer { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 18px; line-height:1; }
-    .tt-prompt h1 { font-size: clamp(48px, 12vw, 88px); line-height: 1; margin: 0; }
-    .answer-display{ font-size:2rem; font-weight:700; text-align:center; padding:.28rem .5rem; border:2px solid #334155; border-radius:.6rem; background:#0f172a; color:var(--text); }
-    .answer-display.ok{ background:var(--ok-bg); border:3px dashed var(--ok-bd); color:var(--ok-fg); }
-    .answer-display.bad{ background:var(--bad-bg); border:3px solid var(--bad-bd); color:var(--bad-fg); }
-    .stButton>button[kind="primary"]{ background:var(--blue) !important; color:#0b1220 !important; border:none !important; font-weight:700; width:100%; }
-    .stButton>button{ min-height:44px; }
-    @keyframes shake{10%,90%{transform:translateX(-1px);}20%,80%{transform:translateX(2px);}30%,50%,70%{transform:translateX(-4px);}40%,60%{transform:translateX(4px);} }
-    .shake{ animation:shake .4s linear both; }
-    .version-badge{ position:fixed; bottom:6px; left:50%; transform:translateX(-50%); font-size:.75rem; color:#94a3b8; opacity:.85; pointer-events:none; }
+    html, body, [data-testid="stAppViewContainer"] { height:100dvh; overflow:hidden; }
+    .block-container{ max-width:460px !important; padding-top:0; padding-bottom:0; padding-left:12px; padding-right:12px; }
+    .tt-screen{height:100dvh; box-sizing:border-box; display:flex; flex-direction:column;}
+    @supports not (height:100dvh){.tt-screen{height:100vh;}}
+    .tt-settings{padding:12px 14px 10px; gap:8px;}
+    .tt-header{height:40px; min-height:40px; display:flex; align-items:center; gap:8px;}
+    .tt-header *{margin:0;}
+    .tt-prompt{flex:1 1 auto; display:flex; align-items:center; justify-content:center;}
+    .tt-prompt h1{font-size:clamp(36px,10vw,64px); line-height:1; margin:0;}
+    .tt-keypad{flex:0 0 auto; height:clamp(248px,40dvh,320px);}
+    .tt-report{padding:10px 14px; display:flex; flex-direction:column; gap:10px; overflow:hidden;}
+    .tt-metrics{display:grid; grid-template-columns:repeat(4,1fr); gap:8px;}
+    .tt-list{flex:1 1 auto; overflow:auto; border-top:1px solid #334155; padding-top:8px;}
+    .tt-spark{height:120px;}
+    .tt-streak{text-align:center; font-weight:600;}
+    :root{--bg:#0b1220;--text:#f8fafc;--muted:#94a3b8;--blue:#60a5fa;--ok-bg:#ecfdf5;--ok-bd:#16a34a;--ok-fg:#065f46;--bad-bg:#fef2f2;--bad-bd:#dc2626;--bad-fg:#7f1d1d;}
+    html, body{background:var(--bg); color:var(--text);}
+    .tt-timer{font-variant-numeric:tabular-nums; font-weight:700; font-size:16px; line-height:1;}
+    .answer-display{font-size:2rem; font-weight:700; text-align:center; padding:.28rem .5rem; border:2px solid #334155; border-radius:.6rem; background:#0f172a; color:var(--text);}
+    .answer-display.ok{background:var(--ok-bg); border:3px dashed var(--ok-bd); color:var(--ok-fg);}
+    .answer-display.bad{background:var(--bad-bg); border:3px solid var(--bad-bd); color:var(--bad-fg);}
+    .stButton>button[kind="primary"]{background:var(--blue) !important; color:#0b1220 !important; border:none !important; font-weight:700; width:100%;}
+    .stButton>button{min-height:44px;}
+    @keyframes shake{10%,90%{transform:translateX(-1px);}20%,80%{transform:translateX(2px);}30%,50%,70%{transform:translateX(-4px);}40%,60%{transform:translateX(4px);}}
+    .shake{animation:shake .4s linear both;}
+    .version-badge{position:fixed; bottom:6px; left:50%; transform:translateX(-50%); font-size:.75rem; color:#94a3b8; opacity:.85; pointer-events:none;}
     </style>
     """, unsafe_allow_html=True)
 else:
@@ -164,21 +161,18 @@ else:
     st.markdown("""
     <style>
     html, body, [data-testid="stAppViewContainer"] { height:100dvh; }
-    @supports not (height:100dvh) {
-      html, body, [data-testid="stAppViewContainer"] { height:100vh; }
-      .tt-screen { height:100vh; }
-    }
-    .block-container{ max-width: 640px; padding-top:0; padding-bottom:0; }
-    .tt-screen { height:100dvh; display:flex; flex-direction:column; }
-    .tt-header { min-height:56px; height:56px; display:flex; align-items:center; gap:8px; }
-    .tt-header * { margin:0; }
-    .tt-timer { font-variant-numeric: tabular-nums; font-weight:700; font-size:18px; line-height:1; }
-    .tt-prompt { flex:1 1 auto; display:flex; align-items:center; justify-content:center; }
-    .tt-keypad { height: clamp(260px, 38dvh, 340px); }
-    .answer-display{ font-size:1.6rem; font-weight:700; text-align:center; padding:.25rem .5rem;
-      border:1px solid #999; border-radius:.5rem; background:#111; color:#eee; }
-    .tt-prompt h1 { font-size: 56px; line-height:1; margin:0; }
-    .stButton>button{ min-height:42px; }
+    @supports not (height:100dvh){ html, body, [data-testid="stAppViewContainer"]{ height:100vh; } }
+    .block-container{ max-width:640px; padding-top:0; padding-bottom:0; }
+    .tt-screen{height:100dvh; display:flex; flex-direction:column;}
+    @supports not (height:100dvh){.tt-screen{height:100vh;}}
+    .tt-header{height:40px; min-height:40px; display:flex; align-items:center; gap:8px;}
+    .tt-header *{margin:0;}
+    .tt-timer{font-variant-numeric:tabular-nums; font-weight:700; font-size:16px; line-height:1;}
+    .tt-prompt{flex:1 1 auto; display:flex; align-items:center; justify-content:center;}
+    .tt-keypad{flex:0 0 auto; height:clamp(248px,40dvh,320px);}
+    .answer-display{font-size:1.6rem; font-weight:700; text-align:center; padding:.25rem .5rem; border:1px solid #999; border-radius:.5rem; background:#111; color:#eee;}
+    .tt-prompt h1{font-size:clamp(36px,10vw,64px); line-height:1; margin:0;}
+    .stButton>button{min-height:42px;}
     </style>
     """, unsafe_allow_html=True)
 
@@ -345,15 +339,10 @@ def _handle_keypad_payload(payload):
 def _timers_compact_row(now_ts: float):
     q_left = st.session_state.q_deadline - now_ts if st.session_state.running else 0.0
     s_left = st.session_state.deadline - now_ts if st.session_state.running else 0.0
-    st.markdown("<div class='tt-header'>", unsafe_allow_html=True)
-    c1, c2, c3 = st.columns([1,1,1], gap="small")
-    with c1:
-        st.markdown(f"<div class='tt-timer'>{math.ceil(max(0, q_left))} s</div>", unsafe_allow_html=True)
-    with c2:
-        st.markdown(f"<div class='tt-timer'>{math.ceil(max(0, s_left))} s</div>", unsafe_allow_html=True)
-    with c3:
-        st.button("Stop", use_container_width=True, on_click=_end_session)
-    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div class='tt-header'><div class='tt-timer'>{math.ceil(max(0, q_left))} s</div><div class='tt-timer'>{math.ceil(max(0, s_left))} s</div></div>",
+        unsafe_allow_html=True,
+    )
 
 # ---------- Fallback keypad ----------
 def _kp_click(code: str): _kp_apply(code)
@@ -418,8 +407,6 @@ def screen_practice():
     now_ts = _now()
     _tick(now_ts)
 
-    st.write("### Practice")
-    st.caption(f"Current per-question time: {st.session_state.per_q:.1f} s")
     _timers_compact_row(now_ts)
 
     # Keep visual order: prompt above keypad; but render keypad first to read payload this run.
@@ -470,7 +457,6 @@ def screen_practice():
         if st.session_state.pending_correct and now_ts < st.session_state.ok_until: classes.append("ok")
         elif now_ts < st.session_state.shake_until: classes += ["bad","shake"]
         st.markdown(f"<div class='{' '.join(classes)}'>{st.session_state.entry or '&nbsp;'}</div>", unsafe_allow_html=True)
-        st.caption(f"Auto-submit after {_required_digits()} digit{'s' if _required_digits()>1 else ''}")
 
 def screen_report():
     total = st.session_state.total_questions

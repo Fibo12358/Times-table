@@ -1,6 +1,6 @@
 # times_tables_streamlit.py — 3 screens + keypad fallback + first-press + auto-submit fixes
 # SAFE MODE defaults ON (minimal CSS). Toggle it off on the Settings screen when you're ready.
-# Version: v1.10.10
+# Version: v1.10.11
 
 import math
 import os
@@ -21,7 +21,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-APP_VERSION = "v1.10.10"
+APP_VERSION = "v1.10.11"
 
 # ---------------- Local storage helpers ----------------
 LS_COMPONENT_AVAILABLE = False
@@ -617,11 +617,11 @@ def screen_practice():
     # fallback keypads do not linger if the custom component loads later.
     if "_keypad_area" not in st.session_state:
         st.session_state._keypad_area = st.empty()
-    keypad_area = st.session_state._keypad_area
-    keypad_area = keypad_area.empty()
+    # Clear existing content and persist the refreshed placeholder
+    st.session_state._keypad_area = st.session_state._keypad_area.empty()
 
     # --- Keypad (render first) ---
-    with keypad_area.container():
+    with st.session_state._keypad_area.container():
         payload = None
         if KP_COMPONENT_AVAILABLE:
             payload = keypad(default=None)  # "CODE|SEQ" or None

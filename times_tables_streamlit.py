@@ -616,12 +616,12 @@ def screen_practice():
     # Reuse a stable container for the keypad and clear it each run so old
     # fallback keypads do not linger if the custom component loads later.
     if "_keypad_area" not in st.session_state:
-        st.session_state._keypad_area = st.container()
+        st.session_state._keypad_area = st.empty()
     keypad_area = st.session_state._keypad_area
-    keypad_area.empty()
+    keypad_area = keypad_area.empty()
 
     # --- Keypad (render first) ---
-    with keypad_area:
+    with keypad_area.container():
         payload = None
         if KP_COMPONENT_AVAILABLE:
             payload = keypad(default=None)  # "CODE|SEQ" or None

@@ -1,0 +1,102 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Keypad</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root{ --kp-gap:6px; --kp-h:64px; --kp-fs:1.25rem; }
+    @media (max-width: 320px){ :root{ --kp-gap:4px; --kp-h:54px; --kp-fs:1.1rem; } }
+    @media (max-width: 280px){ :root{ --kp-gap:3px; --kp-h:50px; --kp-fs:1.0rem; } }
+    html,body{ margin:0; padding:0; background:transparent; }
+    body{ min-height:280px; }
+    .kp{ display:grid; grid-template-columns:repeat(3,1fr); gap:var(--kp-gap); width:100%; }
+    button{
+      display:flex; align-items:center; justify-content:center;
+      height:var(--kp-h); font-size:var(--kp-fs); font-weight:800;
+      border-radius:.6rem; border:0; cursor:pointer; user-select:none;
+      -webkit-tap-highlight-color:transparent; touch-action:manipulation;
+    }
+    .p{ background:#60a5fa; color:#0b1220; }
+    .s{ background:#1f2937; color:#e5e7eb; border:1px solid #334155; }
+    button:active{ filter:brightness(0.95); }
+    .dbg{ position:fixed; top:4px; right:6px; font:12px/1 system-ui, sans-serif; color:#94a3b8; opacity:.75; }
+  </style>
+</head>
+<body>
+  <div class="kp" role="group" aria-label="Numeric keypad">
+    <button class="p" data-v="1">1</button>
+    <button class="p" data-v="2">2</button>
+    <button class="p" data-v="3">3</button>
+    <button class="p" data-v="4">4</button>
+    <button class="p" data-v="5">5</button>
+    <button class="p" data-v="6">6</button>
+    <button class="p" data-v="7">7</button>
+    <button class="p" data-v="8">8</button>
+    <button class="p" data-v="9">9</button>
+    <button class="s" data-v="C">C</button>
+    <button class="p" data-v="0">0</button>
+    <button class="s" data-v="B">⌫</button>
+  </div>
+  <div class="dbg" id="dbg">booting…</div>
+
+  <script>
+    // Dual-protocol shim
+    const badge = (t)=>{ const el=document.getElementById('dbg'); if(el){ el.textContent=t; } };
+    const setH = ()=>{
+      const h = document.documentElement.scrollHeight || document.body.scrollHeight || 300;
+      if (window.Streamlit && window.Streamlit.setFrameHeight){
+        window.Streamlit.setFrameHeight(h);
+      } else {
+        // legacy message
+        window.parent.postMessage({isStreamlitMessage:true, type:"streamlit:setFrameHeight", height:h, apiVersion:1}, "*");
+      }
+    };
+    const setVal = (v)=>{
+      if (window.Streamlit && window.Streamlit.setComponentValue){
+        window.Streamlit.setComponentValue(v);
+      } else {
+        window.parent.postMessage({isStreamlitMessage:true, type:"streamlit:setComponentValue", value:v, apiVersion:1}, "*");
+      }
+    };
+    const ready = ()=>{
+      if (window.Streamlit && window.Streamlit.setComponentReady){
+        window.Streamlit.setComponentReady();
+        badge("ready: official");
+      } else {
+        window.parent.postMessage({isStreamlitMessage:true, type:"streamlit:componentReady", apiVersion:1}, "*");
+        badge("ready: legacy");
+      }
+      setH();
+    };
+
+    // Keep height in sync when Streamlit re-renders
+    window.addEventListener("message", (e)=>{
+      const d = e.data || {};
+      if (d.type === "streamlit:render"){ setH(); }
+    });
+
+    window.addEventListener("load", ()=>{
+      ready();
+      // Aggressive height pings for first ~3s to avoid 0px if handshake is delayed
+      let ticks = 0;
+      const iv = setInterval(()=>{ setH(); ticks += 1; if (ticks >= 30) clearInterval(iv); }, 100);
+      window.addEventListener("resize", ()=>setTimeout(setH,0));
+
+      let seq = 0;
+      function press(val){
+        seq += 1;
+        setVal(val + "|" + seq);
+        setH();
+      }
+      // Use ONLY pointerdown to avoid double-entry
+      document.querySelectorAll("button").forEach(btn=>{
+        btn.addEventListener("pointerdown", (e)=>{ e.preventDefault(); e.stopPropagation(); press(btn.dataset.v); }, {passive:false});
+        // Swallow click/touchstart to be safe
+        btn.addEventListener("click", (e)=>{ e.preventDefault(); e.stopPropagation(); }, true);
+        btn.addEventListener("touchstart", (e)=>{ e.preventDefault(); e.stopPropagation(); }, true);
+      });
+    });
+  </script>
+</body>
+</html>

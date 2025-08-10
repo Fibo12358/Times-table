@@ -30,24 +30,24 @@ window.addEventListener("message", (e)=>{
   if (d.type === "streamlit:render"){
     const args = d.args || {};
     const action = args.action;
-    const key = args.key;
+    const ls_key = args.ls_key !== undefined ? args.ls_key : args.key;
     let result = null;
     try{
       if (action === "get"){
-        const raw = localStorage.getItem(key);
+        const raw = localStorage.getItem(ls_key);
         if (!raw){
           result = null;
         } else {
           try{
             const obj = JSON.parse(raw);
             if (obj && obj.expires_at && Date.parse(obj.expires_at) < Date.now()){
-              localStorage.removeItem(key);
+              localStorage.removeItem(ls_key);
               result = null;
             } else {
               result = obj;
             }
           }catch(err){
-            localStorage.removeItem(key);
+            localStorage.removeItem(ls_key);
             result = null;
           }
         }
@@ -56,10 +56,10 @@ window.addEventListener("message", (e)=>{
         if (args.ttl_days && typeof val === "object"){
           val.expires_at = new Date(Date.now() + args.ttl_days*86400000).toISOString();
         }
-        localStorage.setItem(key, JSON.stringify(val));
+        localStorage.setItem(ls_key, JSON.stringify(val));
         result = true;
       } else if (action === "remove"){
-        localStorage.removeItem(key);
+        localStorage.removeItem(ls_key);
         result = true;
       } else if (action === "info"){
         let ls_ok = true, ls_error = null;
@@ -69,7 +69,7 @@ window.addEventListener("message", (e)=>{
         }catch(err){ ls_ok = false; ls_error = err.message; }
         let stored = null;
         try{
-          const raw = localStorage.getItem(key);
+          const raw = localStorage.getItem(ls_key);
           stored = raw ? JSON.parse(raw) : null;
         }catch(err){}
         result = {

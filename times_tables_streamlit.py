@@ -44,9 +44,18 @@ def _ls_store():
     return st.session_state._ls
 
 
+_ls_component_counter = 0
+
+
+def _ls_component_key():
+    global _ls_component_counter
+    _ls_component_counter += 1
+    return f"ls_{_ls_component_counter}"
+
+
 def ls_get(key):
     if LS_COMPONENT_AVAILABLE:
-        res = ls_component(action="get", key=key, default=None)
+        res = ls_component(action="get", ls_key=key, key=_ls_component_key(), default=None)
         if isinstance(res, dict):
             if res.get("error") or res.get("ERROR"):
                 ls_remove(key)
@@ -57,14 +66,14 @@ def ls_get(key):
 
 def ls_set(key, value, ttl_days=30):
     if LS_COMPONENT_AVAILABLE:
-        return ls_component(action="set", key=key, value=value, ttl_days=ttl_days, default=None)
+        return ls_component(action="set", ls_key=key, value=value, ttl_days=ttl_days, key=_ls_component_key(), default=None)
     _ls_store()[key] = value
     return True
 
 
 def ls_remove(key):
     if LS_COMPONENT_AVAILABLE:
-        return ls_component(action="remove", key=key, default=None)
+        return ls_component(action="remove", ls_key=key, key=_ls_component_key(), default=None)
     _ls_store().pop(key, None)
     return True
 
@@ -131,7 +140,7 @@ def _update_session_duration():
 
 
 def render_debug_panel():
-    info = ls_component(action="info", key="tt.settings.v1", default={}) if LS_COMPONENT_AVAILABLE else {}
+    info = ls_component(action="info", ls_key="tt.settings.v1", key=_ls_component_key(), default={}) if LS_COMPONENT_AVAILABLE else {}
     st.write("#### Storage debug")
     if info.get("origin"):
         st.text(f"Origin: {info.get('origin')}")

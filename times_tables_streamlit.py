@@ -282,8 +282,16 @@ def _handle_keypad_payload(payload):
         code = text
 
     last = st.session_state.get("last_kp_seq", -1)
-    if (seq is None) or (last < 0) or (seq > last):
-        st.session_state.last_kp_seq = (last + 1) if (seq is None) else seq
+
+    # Only ignore duplicates with the same sequence number. If the custom
+    # component reloads it will restart the sequence at 0 which previously
+    # caused all subsequent key presses to be ignored. Accept the event whenever
+    # the sequence changes or no sequence was provided.
+    if seq is None:
+        st.session_state.last_kp_seq = last + 1
+        _kp_apply(code)
+    elif seq != last:
+        st.session_state.last_kp_seq = seq
         _kp_apply(code)
 
 def _timers_row(now_ts: float):

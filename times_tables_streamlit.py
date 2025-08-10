@@ -1,6 +1,6 @@
 # times_tables_streamlit.py — 3 screens + keypad fallback + first-press + auto-submit fixes 
 # SAFE MODE defaults ON (minimal CSS). Toggle it off on the Settings screen when you're ready.
-# Version: v1.10.6
+# Version: v1.10.7
 
 import math
 import time
@@ -10,7 +10,7 @@ from pathlib import Path
 import streamlit as st
 from streamlit.components.v1 import declare_component
 
-APP_VERSION = "v1.10.6"
+APP_VERSION = "v1.10.7"
 
 # ---------------- Page config ----------------
 st.set_page_config(page_title="Times Tables Trainer", page_icon="✳️",

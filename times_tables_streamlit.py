@@ -562,15 +562,23 @@ def screen_practice():
 
     # Keep visual order: prompt above keypad; but render keypad first to read payload this run.
     top_area = st.container()
-    keypad_area = st.container()
+
+    # Reuse a stable container for the keypad and clear it each run so old
+    # fallback keypads do not linger if the custom component loads later.
+    if "_keypad_area" not in st.session_state:
+        st.session_state._keypad_area = st.container()
+    keypad_area = st.session_state._keypad_area
+    keypad_area.empty()
 
     # --- Keypad (render first) ---
     with keypad_area:
+        payload = None
         if KP_COMPONENT_AVAILABLE:
             payload = keypad(default=None)  # "CODE|SEQ" or None
+            st.caption("Keypad: custom")
         else:
-            payload = None
             render_fallback_keypad()
+            st.caption("Keypad: fallback")
 
     # Process keypad event (first-press fix)
     _handle_keypad_payload(payload)

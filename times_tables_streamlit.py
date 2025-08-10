@@ -1,16 +1,31 @@
-# times_tables_streamlit.py — 3 screens + keypad fallback + first-press + auto-submit fixes 
+# times_tables_streamlit.py — 3 screens + keypad fallback + first-press + auto-submit fixes
 # SAFE MODE defaults ON (minimal CSS). Toggle it off on the Settings screen when you're ready.
-# Version: v1.10.7
+# Version: v1.11.0
 
 import math
 import time
 import random
 from pathlib import Path
+from datetime import datetime, timedelta
 
 import streamlit as st
 from streamlit.components.v1 import declare_component
 
-APP_VERSION = "v1.10.7"
+APP_VERSION = "v1.11.0"
+
+# ---------------- Local storage helpers (Slice 2 stubs) ----------------
+def _ls_store():
+    if "_ls" not in st.session_state:
+        st.session_state._ls = {}
+    return st.session_state._ls
+
+
+def ls_get(key):
+    return _ls_store().get(key)
+
+
+def ls_set(key, value, ttl_days=30):
+    _ls_store()[key] = value
 
 # ---------------- Page config ----------------
 st.set_page_config(page_title="Times Tables Trainer", page_icon="✳️",
@@ -32,6 +47,8 @@ QP_SAFE = str(_qp_safe).lower() in ("1", "true")
 # ---------------- State ----------------
 def _init_state():
     ss = st.session_state
+    settings = ls_get("tt.settings.v1") or {}
+
     # Safe mode flag (ON by default)
     ss.setdefault("safe_mode", True if QP_SAFE else False)
 
@@ -43,11 +60,11 @@ def _init_state():
     ss.setdefault("finished", False)
 
     # Settings
-    ss.setdefault("user", "")
-    ss.setdefault("min_table", 2)
-    ss.setdefault("max_table", 12)
-    ss.setdefault("total_seconds", 180)     # session length
-    ss.setdefault("per_q", 10)              # per-question seconds
+    ss.setdefault("user", settings.get("user", ""))
+    ss.setdefault("min_table", settings.get("min", 2))
+    ss.setdefault("max_table", settings.get("max", 12))
+    ss.setdefault("total_seconds", settings.get("session_secs", 180))
+    ss.setdefault("per_q", float(settings.get("secs_per_q", 10.0)))  # per-question seconds
 
     # Timers
     ss.setdefault("session_start", 0.0)
@@ -211,13 +228,37 @@ def _start_session():
     ss.screen = "practice"
     ss.needs_rerun = True
 
+def _persist_settings():
+    key = "tt.settings.v1"
+    settings = ls_get(key) or {
+        "user": st.session_state.user,
+        "min": st.session_state.min_table,
+        "max": st.session_state.max_table,
+        "session_secs": st.session_state.total_seconds,
+        "device_id": st.session_state.get("device_id", ""),
+    }
+    settings["secs_per_q"] = round(float(st.session_state.per_q), 1)
+    settings["expires_at"] = (datetime.utcnow() + timedelta(days=30)).isoformat()
+    ls_set(key, settings, ttl_days=30)
+
 def _end_session():
     ss = st.session_state
     ss.running = False
     ss.finished = True
     ss.awaiting_answer = False
     ss.screen = "report"
+    _persist_settings()
     ss.needs_rerun = True
+
+
+def _update_baseline(correct: bool, timed_out: bool, duration: float):
+    b = float(st.session_state.per_q)
+    if (not correct) or timed_out:
+        b = min(30.0, round(b * 1.10, 1))
+    else:
+        if duration <= 0.5 * b:
+            b = max(2.0, round(b * 0.90, 1))
+    st.session_state.per_q = float(b)
 
 def _record_question(correct: bool, timed_out: bool):
     ss = st.session_state
@@ -244,6 +285,7 @@ def _record_question(correct: bool, timed_out: bool):
                 ss.wrong_twice.append(item)
             ss.scheduled_repeats = [s for s in ss.scheduled_repeats if s["item"] != item]
 
+    _update_baseline(correct, timed_out, duration)
     ss.awaiting_answer = False
     _new_question()
     ss.needs_rerun = True
@@ -327,7 +369,18 @@ def screen_settings():
         st.session_state.min_table = int(st.number_input("Min table", 1, 12, value=st.session_state.min_table, step=1))
     with c2:
         st.session_state.max_table = int(st.number_input("Max table", 1, 12, value=st.session_state.max_table, step=1))
-        st.session_state.per_q = int(st.number_input("Seconds per question", 2, 30, value=st.session_state.per_q, step=1))
+        st.session_state.per_q = round(
+            float(
+                st.number_input(
+                    "Seconds per question",
+                    2.0,
+                    30.0,
+                    value=float(st.session_state.per_q),
+                    step=0.5,
+                )
+            ),
+            1,
+        )
 
     c3, c4 = st.columns([1, 1], gap="small")
     with c3:
@@ -347,6 +400,7 @@ def screen_practice():
     _tick(now_ts)
 
     st.write("### Practice")
+    st.caption(f"Current per-question time: {st.session_state.per_q:.1f} s")
     _timers_row(now_ts)
 
     # Keep visual order: prompt above keypad; but render keypad first to read payload this run.

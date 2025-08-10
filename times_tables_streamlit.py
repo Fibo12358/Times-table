@@ -1,4 +1,4 @@
-# times_tables_streamlit.py — 3 screens + keypad fallback + first-press + auto-submit fixes
+# times_tables_streamlit.py — 3 screens + keypad fallback + first-press + auto-submit fixes 
 # SAFE MODE defaults ON (minimal CSS). Toggle it off on the Settings screen when you're ready.
 # Version: v1.10.6
 

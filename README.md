@@ -12,3 +12,4 @@ A calm, keypad-first trainer for multiplication tables:
 ```bash
 python3 -m pip install -r requirements.txt
 python3 -m streamlit run times_tables_streamlit.py
+```

@@ -38,17 +38,22 @@ window.addEventListener("message", (e)=>{
         if (!raw){
           result = null;
         } else {
-          const obj = JSON.parse(raw);
-          if (obj && obj.expires_at && Date.parse(obj.expires_at) < Date.now()){
+          try{
+            const obj = JSON.parse(raw);
+            if (obj && obj.expires_at && Date.parse(obj.expires_at) < Date.now()){
+              localStorage.removeItem(key);
+              result = null;
+            } else {
+              result = obj;
+            }
+          }catch(err){
             localStorage.removeItem(key);
             result = null;
-          } else {
-            result = obj;
           }
         }
       } else if (action === "set"){
-        let val = args.value || {};
-        if (args.ttl_days){
+        let val = (args.value && typeof args.value === "object") ? {...args.value} : {};
+        if (args.ttl_days && typeof val === "object"){
           val.expires_at = new Date(Date.now() + args.ttl_days*86400000).toISOString();
         }
         localStorage.setItem(key, JSON.stringify(val));

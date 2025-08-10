@@ -46,7 +46,12 @@ def _ls_store():
 
 def ls_get(key):
     if LS_COMPONENT_AVAILABLE:
-        return ls_component(action="get", key=key, default=None)
+        res = ls_component(action="get", key=key, default=None)
+        if isinstance(res, dict):
+            if res.get("error") or res.get("ERROR"):
+                ls_remove(key)
+                return None
+        return res
     return _ls_store().get(key)
 
 

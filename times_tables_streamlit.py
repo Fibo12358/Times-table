@@ -1,11 +1,12 @@
 # times_tables_streamlit.py — 3 screens + keypad fallback + first-press + auto-submit fixes
 # SAFE MODE defaults ON (minimal CSS). Toggle it off on the Settings screen when you're ready.
-# Version: v1.10.11
+# Version: v1.10.12
 
 import math
 import os
 import time
 import random
+import base64
 from pathlib import Path
 from datetime import datetime, timedelta
 from uuid import uuid4
@@ -21,7 +22,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-APP_VERSION = "v1.10.11"
+APP_VERSION = "v1.10.12"
 
 # ---------------- Local storage helpers ----------------
 LS_COMPONENT_AVAILABLE = False
@@ -36,7 +37,9 @@ def _register_ls_component():
     for attempt in range(2):
         try:
             if comp_dir.exists() and (comp_dir / "index.html").exists():
-                ls_component = declare_component("tt_ls", path=str(comp_dir))
+                html = (comp_dir / "index.html").read_text(encoding="utf-8")
+                data_url = "data:text/html;base64," + base64.b64encode(html.encode("utf-8")).decode("ascii")
+                ls_component = declare_component("tt_ls", url=data_url)
                 LS_COMPONENT_AVAILABLE = True
             else:
                 LS_COMPONENT_AVAILABLE = False

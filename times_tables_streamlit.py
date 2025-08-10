@@ -161,6 +161,7 @@ def persist_settings():
 
 def load_settings_on_boot():
     ss = st.session_state
+    ss.boot_load_attempts = ss.get("boot_load_attempts", 0) + 1
     obj = ls_get("tt.settings.v1")
     if isinstance(obj, dict):
         if isinstance(obj.get("user"), str):
@@ -175,7 +176,10 @@ def load_settings_on_boot():
             ss.total_seconds = max(0, int(obj["session_secs"]))
     ss.session_mins = ss.total_seconds // 60
     ss.session_secs = ss.total_seconds % 60
-    ss.did_boot_load = True
+    if isinstance(obj, dict) or ss.boot_load_attempts >= 2:
+        ss.did_boot_load = True
+    else:
+        ss.needs_rerun = True
 
 
 def _update_session_duration():
@@ -265,6 +269,7 @@ def _init_state():
     ss.setdefault("session_mins", ss.total_seconds // 60)
     ss.setdefault("session_secs", ss.total_seconds % 60)
     ss.setdefault("did_boot_load", False)
+    ss.setdefault("boot_load_attempts", 0)
 
     # Timers
     ss.setdefault("session_start", 0.0)

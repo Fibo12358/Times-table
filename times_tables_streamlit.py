@@ -3,6 +3,7 @@
 # Version: v1.10.9
 
 import math
+import os
 import time
 import random
 from pathlib import Path
@@ -17,24 +18,41 @@ APP_VERSION = "v1.10.9"
 # ---------------- Local storage helpers ----------------
 LS_COMPONENT_AVAILABLE = False
 LS_LOAD_ERROR = ""
+# When True, missing localStorage component falls back to in-memory store
+LS_FALLBACK_ALLOWED = True
 
 def _register_ls_component():
+    """Register the localStorage component with a tiny retry and log errors."""
     global LS_COMPONENT_AVAILABLE, LS_LOAD_ERROR, ls_component
-    try:
-        comp_dir = Path(__file__).with_name("ls_component")
-        if comp_dir.exists() and (comp_dir / "index.html").exists():
-            ls_component = declare_component("tt_ls", path=str(comp_dir))
-            LS_COMPONENT_AVAILABLE = True
-        else:
+    comp_dir = Path(__file__).with_name("ls_component")
+    for attempt in range(2):
+        try:
+            if comp_dir.exists() and (comp_dir / "index.html").exists():
+                ls_component = declare_component("tt_ls", path=str(comp_dir))
+                LS_COMPONENT_AVAILABLE = True
+            else:
+                LS_COMPONENT_AVAILABLE = False
+                LS_LOAD_ERROR = f"LocalStorage component not found at: {comp_dir}/index.html"
+                def ls_component(**kwargs):
+                    return None
+            break
+        except Exception as e:
             LS_COMPONENT_AVAILABLE = False
-            LS_LOAD_ERROR = f"LocalStorage component not found at: {comp_dir}/index.html"
+            LS_LOAD_ERROR = f"{type(e).__name__}: {e}"
             def ls_component(**kwargs):
                 return None
-    except Exception as e:
-        LS_COMPONENT_AVAILABLE = False
-        LS_LOAD_ERROR = f"{type(e).__name__}: {e}"
-        def ls_component(**kwargs):
-            return None
+            time.sleep(0.1)
+
+    if not LS_COMPONENT_AVAILABLE:
+        msg = f"LS component unavailable; falling back to in-memory store. {LS_LOAD_ERROR}"
+        try:
+            st.warning(msg)
+            st.write(
+                f"<script>console.error('LS_LOAD_ERROR: {LS_LOAD_ERROR}')</script>",
+                unsafe_allow_html=True,
+            )
+        except Exception:
+            print(f"LS_LOAD_ERROR: {LS_LOAD_ERROR}")
 
 _register_ls_component()
 
@@ -57,23 +75,42 @@ def ls_get(key):
     if LS_COMPONENT_AVAILABLE:
         res = ls_component(action="get", ls_key=key, key=_ls_component_key(), default=None)
         if isinstance(res, dict):
-            if res.get("error") or res.get("ERROR"):
+            err = res.get("error") or res.get("ERROR")
+            if err:
+                if not LS_FALLBACK_ALLOWED:
+                    raise RuntimeError(f"localStorage error: {err}")
                 ls_remove(key)
                 return None
         return res
+    if not LS_FALLBACK_ALLOWED:
+        raise RuntimeError(LS_LOAD_ERROR or "localStorage component unavailable")
     return _ls_store().get(key)
 
 
 def ls_set(key, value, ttl_days=30):
     if LS_COMPONENT_AVAILABLE:
-        return ls_component(action="set", ls_key=key, value=value, ttl_days=ttl_days, key=_ls_component_key(), default=None)
+        res = ls_component(action="set", ls_key=key, value=value, ttl_days=ttl_days, key=_ls_component_key(), default=None)
+        if isinstance(res, dict):
+            err = res.get("error") or res.get("ERROR")
+            if err and not LS_FALLBACK_ALLOWED:
+                raise RuntimeError(f"localStorage error: {err}")
+        return res
+    if not LS_FALLBACK_ALLOWED:
+        raise RuntimeError(LS_LOAD_ERROR or "localStorage component unavailable")
     _ls_store()[key] = value
     return True
 
 
 def ls_remove(key):
     if LS_COMPONENT_AVAILABLE:
-        return ls_component(action="remove", ls_key=key, key=_ls_component_key(), default=None)
+        res = ls_component(action="remove", ls_key=key, key=_ls_component_key(), default=None)
+        if isinstance(res, dict):
+            err = res.get("error") or res.get("ERROR")
+            if err and not LS_FALLBACK_ALLOWED:
+                raise RuntimeError(f"localStorage error: {err}")
+        return res
+    if not LS_FALLBACK_ALLOWED:
+        raise RuntimeError(LS_LOAD_ERROR or "localStorage component unavailable")
     _ls_store().pop(key, None)
     return True
 
@@ -191,6 +228,15 @@ _qp_safe = _qp.get("safe", "1")
 if isinstance(_qp_safe, list):  # older APIs may return list
     _qp_safe = _qp_safe[0]
 QP_SAFE = str(_qp_safe).lower() in ("1", "true")
+
+# Allow disabling of in-memory localStorage fallback via env var or query param
+_qp_ls_fb = _qp.get("ls_fallback", "1")
+if isinstance(_qp_ls_fb, list):
+    _qp_ls_fb = _qp_ls_fb[0]
+LS_FALLBACK_ALLOWED = not (
+    str(os.getenv("TT_DISABLE_LS_FALLBACK", "")).lower() in ("1", "true", "yes")
+    or str(_qp_ls_fb).lower() in ("0", "false", "no")
+)
 
 # ---------------- State ----------------
 def _init_state():

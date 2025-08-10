@@ -1,5 +1,8 @@
-# times_tables_streamlit.py — mobile-first; custom component keypad; faster UI
-# Version: v1.9.3
+# times_tables_streamlit.py — 3 screens + keypad fallback + first-press + auto-submit fixes
+# SAFE MODE defaults ON (minimal CSS). Toggle it off on the Settings screen when you're ready.
+# Version: v1.10.6
+
+import math
 import time
 import random
 from pathlib import Path
@@ -7,111 +10,151 @@ from pathlib import Path
 import streamlit as st
 from streamlit.components.v1 import declare_component
 
-APP_VERSION = "v1.9.3"
-MULTIPLIERS = list(range(1, 12 + 1))  # 1..12
+APP_VERSION = "v1.10.6"
 
-st.set_page_config(page_title="Times Tables Trainer", page_icon="✳️", layout="centered")
+# ---------------- Page config ----------------
+st.set_page_config(page_title="Times Tables Trainer", page_icon="✳️",
+                   layout="wide", initial_sidebar_state="collapsed")
 
-# ---------- Register keypad component (static folder) ----------
-COMP_PATH = Path(__file__).with_name("keypad_component")
-keypad = declare_component("tt_keypad", path=str(COMP_PATH))  # returns "CODE|SEQ" or None
+# ---------------- Query params ----------------
+def _get_qp():
+    try:
+        return dict(st.query_params)  # Streamlit >=1.30
+    except Exception:
+        return {k: v for k, v in st.experimental_get_query_params().items()}
 
-# ---------- Styles ----------
-st.markdown("""
-<style>
-:root{
-  --bg:#0b1220; --text:#f8fafc; --muted:#94a3b8;
-  --blue:#60a5fa; --teal:#34d399;
-  --ok-bg:#ecfdf5; --ok-bd:#16a34a; --ok-fg:#065f46;
-  --bad-bg:#fef2f2; --bad-bd:#dc2626; --bad-fg:#7f1d1d;
-}
-html, body { background: var(--bg); color: var(--text); }
-.block-container{max-width:380px !important; padding-left:12px; padding-right:12px}
+_qp = _get_qp()
+_qp_safe = _qp.get("safe", "1")
+if isinstance(_qp_safe, list):  # older APIs may return list
+    _qp_safe = _qp_safe[0]
+QP_SAFE = str(_qp_safe).lower() in ("1", "true")
 
-/* Answer pill */
-.answer-display{
-  font-size:2.0rem; font-weight:700; text-align:center;
-  padding:.28rem .5rem; border:2px solid #334155; border-radius:.6rem;
-  background:#0f172a; color:var(--text); letter-spacing:.02em;
-  transition: border-color .15s ease, background-color .15s ease;
-}
-.answer-display.ok{ background:var(--ok-bg); border:3px dashed var(--ok-bd); color:var(--ok-fg);}
-.answer-display.bad{ background:var(--bad-bg); border:3px solid var(--bad-bd); color:var(--bad-fg);}
-.subtle{ color:var(--muted); font-size:.9rem; text-align:center; }
-
-/* Bars */
-.barwrap{ margin:.2rem 0 .6rem 0;}
-.barlabel{ font-size:.95rem; color:var(--text); margin-bottom:.25rem;}
-.barbg{ background:#334155; border-radius:8px; height:12px; overflow:hidden;}
-.barfg{ height:100%; border-radius:8px; }
-
-/* Start/Stop buttons */
-.stButton>button[kind="primary"]{
-  background:var(--blue) !important; color:#0b1220 !important; border:none !important; font-weight:700; width:100%;
-}
-.stButton>button[kind="secondary"]{
-  background:#1f2937 !important; color:#e5e7eb !important; border:1px solid #334155 !important; width:100%;
-}
-.stButton>button{ min-height:44px; }
-
-/* Shake effect */
-@keyframes shake{10%,90%{transform:translateX(-1px);}20%,80%{transform:translateX(2px);}30%,50%,70%{transform:translateX(-4px);}40%,60%{transform:translateX(4px);} }
-.shake{ animation:shake .4s linear both; }
-
-/* Version badge */
-.version-badge{
-  position:fixed; bottom:6px; left:50%; transform:translateX(-50%);
-  font-size:.75rem; color:#94a3b8; opacity:.85; pointer-events:none;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# ---------- State ----------
+# ---------------- State ----------------
 def _init_state():
     ss = st.session_state
+    # Safe mode flag (ON by default)
+    ss.setdefault("safe_mode", True if QP_SAFE else False)
+
+    # Router
+    ss.setdefault("screen", "settings")     # "settings" | "practice" | "report"
+
+    # Run flags
     ss.setdefault("running", False)
     ss.setdefault("finished", False)
 
+    # Settings
+    ss.setdefault("user", "")
     ss.setdefault("min_table", 2)
     ss.setdefault("max_table", 12)
-    ss.setdefault("total_seconds", 180)
-    ss.setdefault("per_q", 10)
+    ss.setdefault("total_seconds", 180)     # session length
+    ss.setdefault("per_q", 10)              # per-question seconds
 
+    # Timers
     ss.setdefault("session_start", 0.0)
     ss.setdefault("deadline", 0.0)
     ss.setdefault("q_start", 0.0)
     ss.setdefault("q_deadline", 0.0)
 
+    # Current question
     ss.setdefault("awaiting_answer", False)
     ss.setdefault("a", None)
     ss.setdefault("b", None)
 
+    # Counters
     ss.setdefault("total_questions", 0)
     ss.setdefault("correct_questions", 0)
     ss.setdefault("total_time_spent", 0.0)
 
-    ss.setdefault("wrong_attempt_items", set())
-    ss.setdefault("missed_items", set())
-    ss.setdefault("wrong_twice", set())
+    # Tracking (lists for safe serialisation)
+    ss.setdefault("wrong_attempt_items", [])
+    ss.setdefault("missed_items", [])
+    ss.setdefault("wrong_twice", [])
     ss.setdefault("attempts_wrong", {})
     ss.setdefault("scheduled_repeats", [])
 
+    # Input / FX
     ss.setdefault("entry", "")
     ss.setdefault("needs_rerun", False)
     ss.setdefault("shake_until", 0.0)
     ss.setdefault("ok_until", 0.0)
     ss.setdefault("pending_correct", False)
-
     ss.setdefault("last_kp_seq", -1)
 
+_init_state()
+
+# ---------------- Keypad component (with fallback) ----------------
+KP_COMPONENT_AVAILABLE = False
+KP_LOAD_ERROR = ""
+def _register_keypad_component():
+    global KP_COMPONENT_AVAILABLE, KP_LOAD_ERROR, keypad
+    try:
+        comp_dir = Path(__file__).with_name("keypad_component")
+        if comp_dir.exists() and (comp_dir / "index.html").exists():
+            keypad = declare_component("tt_keypad", path=str(comp_dir))  # returns "CODE|SEQ" or None
+            KP_COMPONENT_AVAILABLE = True
+        else:
+            KP_COMPONENT_AVAILABLE = False
+            KP_LOAD_ERROR = f"Keypad component not found at: {comp_dir}/index.html"
+            def keypad(default=None, key=None):
+                return None
+    except Exception as e:
+        KP_COMPONENT_AVAILABLE = False
+        KP_LOAD_ERROR = f"{type(e).__name__}: {e}"
+        def keypad(default=None, key=None):
+            return None
+
+_register_keypad_component()
+
+# ---------------- Styles ----------------
+if not st.session_state.safe_mode:
+    # Fancy CSS: no scroll, hidden chrome, compact layout
+    st.markdown("""
+    <style>
+    div[data-testid="stToolbar"], div[data-testid="stDecoration"], header, footer, #MainMenu { display: none !important; }
+    html, body, [data-testid="stAppViewContainer"] { height: 100vh; overflow: hidden; }
+    .block-container{ max_width: 460px !important; max-width: 460px !important; padding: 0 12px; }
+    .tt-screen { height: 100vh; box-sizing: border-box; display:flex; flex-direction:column; }
+    .tt-settings { padding: 12px 14px 10px; gap: 8px; }
+    .tt-header { height: 88px; display:flex; gap:8px; align-items:center; justify-content:space-between; }
+    .tt-prompt { flex: 1 1 auto; display:flex; align-items:center; justify-content:center; }
+    .tt-keypad { height: 360px; }
+    .tt-report { padding: 10px 14px; display:flex; flex-direction:column; gap:10px; overflow:hidden; }
+    .tt-metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+    .tt-list { flex:1 1 auto; overflow:auto; border-top:1px solid #334155; padding-top:8px; }
+    .tt-spark { height:120px; }
+    .tt-streak { text-align:center; font-weight:600; }
+    :root{ --bg:#0b1220; --text:#f8fafc; --muted:#94a3b8; --blue:#60a5fa; --ok-bg:#ecfdf5; --ok-bd:#16a34a; --ok-fg:#065f46; --bad-bg:#fef2f2; --bad-bd:#dc2626; --bad-fg:#7f1d1d; }
+    html, body { background: var(--bg); color: var(--text); }
+    .tt-timer { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 22px; }
+    .tt-prompt h1 { font-size: clamp(48px, 12vw, 88px); line-height: 1; margin: 0; }
+    .answer-display{ font-size:2rem; font-weight:700; text-align:center; padding:.28rem .5rem; border:2px solid #334155; border-radius:.6rem; background:#0f172a; color:var(--text); }
+    .answer-display.ok{ background:var(--ok-bg); border:3px dashed var(--ok-bd); color:var(--ok-fg); }
+    .answer-display.bad{ background:var(--bad-bg); border:3px solid var(--bad-bd); color:var(--bad-fg); }
+    .stButton>button[kind="primary"]{ background:var(--blue) !important; color:#0b1220 !important; border:none !important; font-weight:700; width:100%; }
+    .stButton>button{ min-height:44px; }
+    @keyframes shake{10%,90%{transform:translateX(-1px);}20%,80%{transform:translateX(2px);}30%,50%,70%{transform:translateX(-4px);}40%,60%{transform:translateX(4px);} }
+    .shake{ animation:shake .4s linear both; }
+    @media (max-height: 740px) { .tt-keypad { height: 300px; } .tt-header { height: 72px; } }
+    .version-badge{ position:fixed; bottom:6px; left:50%; transform:translateX(-50%); font-size:.75rem; color:#94a3b8; opacity:.85; pointer-events:none; }
+    </style>
+    """, unsafe_allow_html=True)
+else:
+    # Minimal CSS so errors and content are always visible
+    st.markdown("""
+    <style>
+    .block-container{ max-width: 640px; }
+    .answer-display{ font-size:1.6rem; font-weight:700; text-align:center; padding:.25rem .5rem;
+      border:1px solid #999; border-radius:.5rem; background:#111; color:#eee; }
+    .tt-prompt h1 { font-size: 56px; line-height:1; margin:0.25rem 0; }
+    .stButton>button{ min-height:42px; }
+    .tt-keypad { padding-top: 6px; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# ---------------- Logic helpers ----------------
+MULTIPLIERS = list(range(1, 13))  # 1..12
 def _now() -> float: return time.monotonic()
-
-def _fmt_mmss(s: float) -> str:
-    if s < 0: s = 0
-    m, s = divmod(int(round(s)), 60); return f"{m:02d}:{s:02d}"
-
-def _required_digits() -> int:
-    return len(str(abs(st.session_state.a * st.session_state.b)))
+def _required_digits() -> int: return len(str(abs(st.session_state.a * st.session_state.b)))
 
 def _decrement_scheduled():
     for s in st.session_state.scheduled_repeats:
@@ -159,18 +202,22 @@ def _start_session():
     ss.total_questions = 0
     ss.correct_questions = 0
     ss.total_time_spent = 0.0
-    ss.wrong_attempt_items = set()
-    ss.missed_items = set()
-    ss.wrong_twice = set()
+    ss.wrong_attempt_items = []
+    ss.missed_items = []
+    ss.wrong_twice = []
     ss.attempts_wrong = {}
     ss.scheduled_repeats = []
     _new_question()
+    ss.screen = "practice"
+    ss.needs_rerun = True
 
 def _end_session():
     ss = st.session_state
     ss.running = False
     ss.finished = True
     ss.awaiting_answer = False
+    ss.screen = "report"
+    ss.needs_rerun = True
 
 def _record_question(correct: bool, timed_out: bool):
     ss = st.session_state
@@ -185,14 +232,16 @@ def _record_question(correct: bool, timed_out: bool):
     else:
         cnt = ss.attempts_wrong.get(item, 0) + 1
         ss.attempts_wrong[item] = cnt
-        ss.wrong_attempt_items.add(item)
-        if timed_out:
-            ss.missed_items.add(item)
+        if item not in ss.wrong_attempt_items:
+            ss.wrong_attempt_items.append(item)
+        if timed_out and item not in ss.missed_items:
+            ss.missed_items.append(item)
         if cnt == 1:
             if item not in (s["item"] for s in ss.scheduled_repeats):
                 ss.scheduled_repeats.append({"item": item, "remaining": random.randint(2, 4)})
         else:
-            ss.wrong_twice.add(item)
+            if item not in ss.wrong_twice:
+                ss.wrong_twice.append(item)
             ss.scheduled_repeats = [s for s in ss.scheduled_repeats if s["item"] != item]
 
     ss.awaiting_answer = False
@@ -201,101 +250,121 @@ def _record_question(correct: bool, timed_out: bool):
 
 def _tick(now_ts: float):
     ss = st.session_state
-    if not ss.running:
-        return
-    if ss.pending_correct and now_ts < ss.ok_until:
-        return
+    if not ss.running: return
+    if ss.pending_correct and now_ts < ss.ok_until: return
     if now_ts >= ss.deadline:
-        _end_session()
-        ss.needs_rerun = True
-        return
+        _end_session(); return
     if ss.awaiting_answer and now_ts >= ss.q_deadline:
         _record_question(False, True)
 
 def _kp_apply(code: str):
-    if not st.session_state.awaiting_answer:
-        return
+    if not st.session_state.awaiting_answer: return
     if code == "C":
         st.session_state.entry = ""
     elif code == "B":
         st.session_state.entry = st.session_state.entry[:-1]
-    elif code.isdigit():
+    elif code and code.isdigit():
         st.session_state.entry += code
 
-def _bar(label: str, percent: int, colour_hex: str, caption: str = ""):
-    percent = max(0, min(100, int(percent)))
-    st.markdown(f"""
-    <div class="barwrap">
-      <div class="barlabel">{label}</div>
-      <div class="barbg"><div class="barfg" style="width:{percent}%; background:{colour_hex};"></div></div>
-      {f'<div class="subtle">{caption}</div>' if caption else ''}
-    </div>""", unsafe_allow_html=True)
-
-# ---------- UI ----------
-_init_state()
-st.title("Times Tables Trainer")
-
-with st.container():
-    if not st.session_state.running:
-        st.button("Start session", type="primary", use_container_width=True, on_click=_start_session)
+# First-keypress fix
+def _handle_keypad_payload(payload):
+    if not payload:
+        return
+    text = str(payload)
+    code, seq = None, None
+    if "|" in text:
+        code, seq_s = text.split("|", 1)
+        try:
+            seq = int(seq_s)
+        except Exception:
+            seq = None   # treat as unsequenced
     else:
-        st.button("Stop", type="secondary", use_container_width=True, on_click=_end_session)
+        code = text
 
-    with st.expander("Session settings", expanded=not st.session_state.running):
-        st.session_state.min_table = int(st.number_input("Min table", 1, 20, value=st.session_state.min_table, step=1))
-        st.session_state.max_table = int(st.number_input("Max table", 1, 20, value=st.session_state.max_table, step=1))
-        if st.session_state.min_table > st.session_state.max_table:
-            st.session_state.min_table, st.session_state.max_table = st.session_state.max_table, st.session_state.min_table
-        st.session_state.per_q = int(st.number_input("Per-question (s)", 3, 120, value=st.session_state.per_q, step=1))
+    last = st.session_state.get("last_kp_seq", -1)
+    if (seq is None) or (last < 0) or (seq > last):
+        st.session_state.last_kp_seq = (last + 1) if (seq is None) else seq
+        _kp_apply(code)
+
+def _timers_row(now_ts: float):
+    q_left = st.session_state.q_deadline - now_ts if st.session_state.running else 0.0
+    s_left = st.session_state.deadline - now_ts if st.session_state.running else 0.0
+    c1, c2, c3 = st.columns([1,1,1], gap="small")
+    with c1: st.caption("Per-question"); st.metric("", f"{math.ceil(max(0, q_left))} s")
+    with c2: st.caption("Session");     st.metric("", f"{math.ceil(max(0, s_left))} s")
+    with c3: st.caption(" ");           st.button("Stop", use_container_width=True, on_click=_end_session)
+
+# ---------- Fallback keypad ----------
+def _kp_click(code: str): _kp_apply(code)
+def render_fallback_keypad():
+    for row in ("123","456","789"):
+        cols = st.columns(3, gap="small")
+        for i, ch in enumerate(row):
+            with cols[i]:
+                st.button(ch, use_container_width=True, on_click=_kp_click, args=(ch,))
+    cols = st.columns(3, gap="small")
+    with cols[0]: st.button("Clear", use_container_width=True, on_click=_kp_click, args=("C",))
+    with cols[1]: st.button("0", use_container_width=True, on_click=_kp_click, args=("0",))
+    with cols[2]: st.button("Back", use_container_width=True, on_click=_kp_click, args=("B",))
+
+# ---------------- Screens ----------------
+def screen_settings():
+    st.write("### Times Tables — Settings")
+
+    # Safe-mode toggle (for you): off = fancy CSS; on = minimal CSS
+    st.session_state.safe_mode = st.toggle(
+        "Safe mode (minimal CSS)",
+        value=st.session_state.safe_mode,
+        help="Turn off to enable the no-scroll/hidden-chrome layout"
+    )
+
+    if KP_LOAD_ERROR:
+        st.info(f"Keypad component: {KP_LOAD_ERROR}. Using fallback keypad.", icon="ℹ️")
+
+    c1, c2 = st.columns([1, 1], gap="small")
+    with c1:
+        st.session_state.user = st.text_input("User", st.session_state.user, max_chars=32, placeholder="Name or ID")
+        st.session_state.min_table = int(st.number_input("Min table", 1, 12, value=st.session_state.min_table, step=1))
+    with c2:
+        st.session_state.max_table = int(st.number_input("Max table", 1, 12, value=st.session_state.max_table, step=1))
+        st.session_state.per_q = int(st.number_input("Seconds per question", 2, 30, value=st.session_state.per_q, step=1))
+
+    c3, c4 = st.columns([1, 1], gap="small")
+    with c3:
         mins = st.number_input("Session minutes", 0, 180, value=st.session_state.total_seconds // 60, step=1)
         secs = st.number_input("Session seconds", 0, 59, value=st.session_state.total_seconds % 60, step=1)
         st.session_state.total_seconds = int(mins) * 60 + int(secs)
+    with c4:
+        st.write("")
+        if st.button("Start", type="primary", use_container_width=True):
+            _start_session(); st.rerun()
 
-# Top question timer
-qbar_ph = st.empty()
-now_ts = _now()
-if st.session_state.running:
-    q_left_s = st.session_state.q_deadline - now_ts
-    q_pct = round(100 * q_left_s / max(1, st.session_state.per_q))
-    with qbar_ph:
-        _bar("Question time", q_pct, "var(--blue)", f"Time left: {_fmt_mmss(q_left_s)}")
-else:
-    with qbar_ph:
-        _bar("Question time", 0, "var(--blue)", "Time left: 00:00")
+    if st.session_state.min_table > st.session_state.max_table:
+        st.session_state.min_table, st.session_state.max_table = st.session_state.max_table, st.session_state.min_table
 
-# # Main area
-if st.session_state.running:
+def screen_practice():
+    now_ts = _now()
     _tick(now_ts)
 
-    # Declare containers in visual order (top first), but render keypad first
-    top = st.container()       # will hold: question + answer (ABOVE)
-    kp_area = st.container()   # will hold: keypad (BELOW)
+    st.write("### Practice")
+    _timers_row(now_ts)
 
-    # --- Render keypad first (so we can process input immediately) ---
-    with kp_area:
-        payload = keypad(default=None)  # returns "CODE|SEQ" or None
+    # Keep visual order: prompt above keypad; but render keypad first to read payload this run.
+    top_area = st.container()
+    keypad_area = st.container()
 
-    # Process keypad input BEFORE drawing the answer
-    if payload:
-        text = str(payload)
-        if "|" in text:
-            code, seq_s = text.split("|", 1)
-            try:
-                seq = int(seq_s)
-            except ValueError:
-                seq = st.session_state.last_kp_seq
-            if seq != st.session_state.last_kp_seq:
-                st.session_state.last_kp_seq = seq
-                _kp_apply(code)
+    # --- Keypad (render first) ---
+    with keypad_area:
+        if KP_COMPONENT_AVAILABLE:
+            payload = keypad(default=None)  # "CODE|SEQ" or None
         else:
-            _kp_apply(text)
+            payload = None
+            render_fallback_keypad()
 
-    # Finalise a correct answer after the short green flash
-    if st.session_state.pending_correct and now_ts >= st.session_state.ok_until:
-        st.session_state.pending_correct = False
-        _record_question(True, False)
+    # Process keypad event (first-press fix)
+    _handle_keypad_payload(payload)
 
-    # Auto-submit when the required number of digits is reached
+    # Auto-submit when required digits reached
     if st.session_state.awaiting_answer:
         target = st.session_state.a * st.session_state.b
         need = _required_digits()
@@ -303,82 +372,84 @@ if st.session_state.running:
             try:
                 val = int(st.session_state.entry)
             except ValueError:
-                st.session_state.entry = ""
-                st.session_state.shake_until = now_ts + 0.45
+                st.session_state.entry = ""; st.session_state.shake_until = now_ts + 0.45
             else:
                 if val == target:
                     st.session_state.awaiting_answer = False
                     st.session_state.pending_correct = True
                     st.session_state.ok_until = now_ts + 0.6
+                    st.session_state.needs_rerun = True  # trigger the green-flash cycle immediately
                 else:
                     st.session_state.entry = ""
-                    st.session_state.wrong_attempt_items.add((st.session_state.a, st.session_state.b))
+                    if (st.session_state.a, st.session_state.b) not in st.session_state.wrong_attempt_items:
+                        st.session_state.wrong_attempt_items.append((st.session_state.a, st.session_state.b))
                     st.session_state.shake_until = now_ts + 0.45
 
-    # --- Now paint the question + answer ABOVE the keypad ---
-    with top:
-        st.subheader(f"{st.session_state.a} × {st.session_state.b} = ?")
+    # Finalise correct after the green flash (no extra keypress needed)
+    if st.session_state.pending_correct and now_ts >= st.session_state.ok_until:
+        st.session_state.pending_correct = False
+        _record_question(True, False)
+
+    # --- Prompt + entry (draw after processing so it reflects the latest state) ---
+    with top_area:
+        st.markdown(f"<div class='tt-prompt'><h1>{st.session_state.a} × {st.session_state.b}</h1></div>", unsafe_allow_html=True)
         classes = ["answer-display"]
-        if st.session_state.pending_correct and now_ts < st.session_state.ok_until:
-            classes.append("ok")
-        elif now_ts < st.session_state.shake_until:
-            classes.append("bad"); classes.append("shake")
+        if st.session_state.pending_correct and now_ts < st.session_state.ok_until: classes.append("ok")
+        elif now_ts < st.session_state.shake_until: classes += ["bad","shake"]
         st.markdown(f"<div class='{' '.join(classes)}'>{st.session_state.entry or '&nbsp;'}</div>", unsafe_allow_html=True)
-        st.markdown(
-            f"<div class='subtle'>Auto-submit after <b>{_required_digits()}</b> digit{'s' if _required_digits()>1 else ''}</div>",
-            unsafe_allow_html=True
-        )
+        st.caption(f"Auto-submit after {_required_digits()} digit{'s' if _required_digits()>1 else ''}")
 
-    st.caption(f"Answered: {st.session_state.total_questions}  |  Correct: {st.session_state.correct_questions}")
-
-
-
-# Report
-if st.session_state.finished:
+def screen_report():
     total = st.session_state.total_questions
     correct = st.session_state.correct_questions
     avg = (st.session_state.total_time_spent / total) if total else 0.0
     pct = (100.0 * correct / total) if total else 0.0
 
-    st.subheader("Session report")
-    st.write(f"Questions answered: **{total}**")
-    st.write(f"Correct: **{correct}** ({pct:0.1f}%)")
-    st.write(f"Average time per question: **{avg:0.2f}s**")
+    st.write("### Session report")
+    cols = st.columns(4, gap="small")
+    data = [("Correct", f"{pct:0.0f}%"), ("Questions", str(total)),
+            ("Avg time", f"{avg:0.2f} s"), ("Time spent", f"{st.session_state.total_time_spent:0.0f} s")]
+    for c, (lab, val) in zip(cols, data):
+        with c: st.metric(lab, val)
 
-    wrong_any = sorted(list(st.session_state.wrong_attempt_items), key=lambda t: (t[0], t[1]))
+    st.markdown("##### Items to revisit")
+    wrong_any = sorted(list(set(st.session_state.wrong_attempt_items)))
     if wrong_any:
-        st.write("Items you got wrong at least once:")
-        lines = []
         for a, b in wrong_any:
-            prod = a * b
-            if (a, b) in st.session_state.wrong_twice:
-                lines.append(f"<div style='color:#b91c1c;font-weight:700'>✕ {a} × {b} = {prod} — wrong twice</div>")
-            else:
-                lines.append(f"<div>• {a} × {b} = {prod}</div>")
-        st.markdown("\n".join(lines), unsafe_allow_html=True)
+            extra = " — wrong twice" if (a, b) in st.session_state.wrong_twice else ""
+            st.write(f"{a} × {b}{extra}")
+    else:
+        st.write("None.")
 
-    if st.button("Start a new session", type="primary"):
-        _start_session()
+    c1, c2 = st.columns(2, gap="small")
+    with c1:
+        if st.button("Again", type="primary", use_container_width=True):
+            _start_session(); st.rerun()
+    with c2:
+        if st.button("Settings", use_container_width=True):
+            st.session_state.screen = "settings"; st.rerun()
 
-# Bottom session timer
-sbar_ph = st.empty()
-if st.session_state.running:
-    sess_left_s = st.session_state.deadline - now_ts
-    sess_pct = round(100 * sess_left_s / max(1, st.session_state.total_seconds))
-    st.markdown("<hr style='border:none;height:1px;background:#334155;margin:.8rem 0'/>", unsafe_allow_html=True)
-    with sbar_ph:
-        _bar("Session time", sess_pct, "var(--teal)", f"Time left: {_fmt_mmss(sess_left_s)}")
-else:
-    with sbar_ph:
-        _bar("Session time", 0, "var(--teal)", "Time left: 00:00")
+# ---------------- Router + footer ----------------
+def _render():
+    try:
+        if st.session_state.screen == "settings":
+            screen_settings()
+        elif st.session_state.screen == "practice":
+            screen_practice()
+        else:
+            screen_report()
+    except Exception as e:
+        st.error("Unhandled exception while rendering.")
+        st.exception(e)
 
-# Version badge
-st.markdown(f"<div class='version-badge'>Times Tables Trainer {APP_VERSION}</div>", unsafe_allow_html=True)
+    st.caption(f"Times Tables Trainer {APP_VERSION} — Keypad={'custom' if KP_COMPONENT_AVAILABLE else 'fallback'} — SAFE_MODE={'on' if st.session_state.safe_mode else 'off'}")
 
-# Refresh loop — faster tick for snappy UI
-if st.session_state.needs_rerun:
-    st.session_state.needs_rerun = False
-    st.rerun()
-elif st.session_state.running:
-    time.sleep(0.1)  # was 1.0s → 0.1s
-    st.rerun()
+    # Heartbeat (always on so green flash and timers progress without extra keypress)
+    if st.session_state.needs_rerun:
+        st.session_state.needs_rerun = False
+        st.rerun()
+    elif st.session_state.running:
+        time.sleep(0.1)
+        st.rerun()
+
+_render()

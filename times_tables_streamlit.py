@@ -13,6 +13,14 @@ from uuid import uuid4
 import streamlit as st
 from streamlit.components.v1 import declare_component
 
+# Ensure page configuration happens before any other Streamlit call.
+st.set_page_config(
+    page_title="Times Tables Trainer",
+    page_icon="✳️",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
 APP_VERSION = "v1.10.9"
 
 # ---------------- Local storage helpers ----------------
@@ -211,10 +219,6 @@ def render_debug_panel():
     st.caption("localStorage is per origin (host + port). On port change, storage appears empty.")
     st.write("Python view:")
     st.json(ls_get("tt.settings.v1"))
-
-# ---------------- Page config ----------------
-st.set_page_config(page_title="Times Tables Trainer", page_icon="✳️",
-                   layout="wide", initial_sidebar_state="collapsed")
 
 # ---------------- Query params ----------------
 def _get_qp():

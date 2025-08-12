@@ -2,7 +2,7 @@
 # Numeric keypad (custom or fallback), auto-submit, first-press fix, spaced repetition
 # Discord webhook notifications (requests), streamlined UI
 # Persist Start-screen settings per device using browser cookies (extra-streamlit-components)
-# Version: v1.13.0
+# Version: v1.13.1
 
 import os
 import time
@@ -17,7 +17,7 @@ import streamlit as st
 from streamlit.components.v1 import declare_component
 import extra_streamlit_components as stx  # CookieManager
 
-APP_VERSION = "v1.13.0"
+APP_VERSION = "v1.13.1"
 
 # ---------------- Logging ----------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -48,11 +48,27 @@ def _secret_webhook() -> str | None:
 st.set_page_config(page_title="Times Tables Trainer", page_icon="✳️",
                    layout="centered", initial_sidebar_state="collapsed")
 
+# Query params helper (used for debug toggle)
+def _get_qp():
+    try:
+        return dict(st.query_params)
+    except Exception:
+        return {k: v for k, v in st.experimental_get_query_params().items()}
+
+_qp = _get_qp()
+DEBUG = str(_qp.get("debug", "0")).lower() in ("1", "true", "yes")
+
+# Hide Streamlit chrome unless DEBUG
+if not DEBUG:
+    st.markdown("""
+    <style>
+      div[data-testid="stToolbar"], div[data-testid="stDecoration"], header, footer, #MainMenu { display: none !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# Global theme/css
 st.markdown("""
 <style>
-  /* Hide Streamlit chrome */
-  div[data-testid="stToolbar"], div[data-testid="stDecoration"], header, footer, #MainMenu { display: none !important; }
-
   /* Layout + theme */
   .block-container{ max-width: 440px !important; padding: 8px 12px !important; }
   html, body { background:#0b1220; color:#f8fafc; }
@@ -96,13 +112,14 @@ st.markdown("""
 
 # ---------------- Cookie persistence ----------------
 COOKIE_KEY = "ttt_settings_v1"
-COOKIE_TRIES_MAX = 8
+COOKIE_TRIES_MAX = 8  # read retries on first paint
+COOKIE_WRITE_TRIES_MAX = 6  # ensure a render confirms write before navigation
 
 def _cookie_manager():
-    # Keep a single manager instance in state
+    # Fixed key prevents remount jitter
     cm = st.session_state.get("_cookie_mgr")
     if cm is None:
-        cm = stx.CookieManager()
+        cm = stx.CookieManager(key="cookies")
         st.session_state._cookie_mgr = cm
     return cm
 
@@ -116,7 +133,6 @@ def _cookie_load_once_with_retries():
     cm = _cookie_manager()
     raw = None
     try:
-        # Prefer key-specific read (faster than get_all on some builds)
         raw = cm.get(COOKIE_KEY)
     except Exception:
         raw = None
@@ -142,7 +158,7 @@ def _cookie_load_once_with_retries():
     if tries < COOKIE_TRIES_MAX:
         ss.needs_rerun = True
     else:
-        ss._cookie_loaded = True  # give up quietly
+        ss._cookie_loaded = True  # give up quietly after retries
 
 def _cookie_save_current_settings():
     ss = st.session_state
@@ -154,20 +170,20 @@ def _cookie_save_current_settings():
         "minutes": ss.total_seconds // 60,
     })
     cm = _cookie_manager()
-    # Expire in ~1 year; SameSite=Lax; path="/"
     try:
         cm.set(COOKIE_KEY, payload, expires_at=(datetime.utcnow() + timedelta(days=365)))
+        ss._cookie_last_written = payload
     except Exception as e:
         logger.warning("Cookie set failed: %s", e)
 
-# ---------------- Query params (not used for persistence) ----------------
-def _get_qp():
+def _cookie_confirm_written() -> bool:
+    """Read back to confirm persistence."""
     try:
-        return dict(st.query_params)
+        cm = _cookie_manager()
+        raw = cm.get(COOKIE_KEY)
+        return bool(raw)
     except Exception:
-        return {k: v for k, v in st.experimental_get_query_params().items()}
-
-_qp = _get_qp()
+        return False
 
 # ---------------- State ----------------
 def _init_state():
@@ -226,9 +242,13 @@ def _init_state():
         "default": _mask_webhook(default_hook)
     })
 
-    # Cookie init flags
+    # Cookie init + write-gating flags
     ss.setdefault("_cookie_loaded", False)
     ss.setdefault("_cookie_tries", 0)
+    ss.setdefault("_pending_start", False)
+    ss.setdefault("_cookie_write_done", False)
+    ss.setdefault("_cookie_write_waits", 0)
+    ss.setdefault("_cookie_last_written", "")
 
 _init_state()
 
@@ -489,6 +509,25 @@ def screen_start():
     # One-shot cookie prefill with safe retries (non-blocking)
     _cookie_load_once_with_retries()
 
+    # Optional debug panel
+    if DEBUG:
+        with st.expander("Debug: cookie & state", expanded=False):
+            cm = _cookie_manager()
+            st.write("cookie_loaded:", st.session_state._cookie_loaded, "tries:", st.session_state._cookie_tries)
+            try:
+                st.write("cookie exists now:", bool(cm.get(COOKIE_KEY)))
+                st.write("cookie value preview:", (cm.get(COOKIE_KEY) or "")[:160])
+            except Exception as e:
+                st.write("cookie read error:", e)
+            st.write("pending_start:", st.session_state._pending_start,
+                     "write_done:", st.session_state._cookie_write_done,
+                     "write_waits:", st.session_state._cookie_write_waits)
+
+            if st.button("Delete settings cookie"):
+                try: cm.delete(COOKIE_KEY)
+                except Exception: pass
+                st.rerun()
+
     # Start controls in a form
     with st.form("start_form", clear_on_submit=False):
         c1, c2 = st.columns([1, 1], gap="small")
@@ -511,25 +550,40 @@ def screen_start():
         if st.session_state.min_table > st.session_state.max_table:
             st.session_state.min_table, st.session_state.max_table = st.session_state.max_table, st.session_state.min_table
 
-        # Advanced panel kept commented out
-        # if False:
-        #     with st.expander("Advanced"):
-        #         st.session_state.webhook_url = st.text_input(
-        #             "Discord webhook URL (effective)",
-        #             value=st.session_state.webhook_url,
-        #             help="Precedence: this field > DISCORD_WEBHOOK env var > secrets.toml > built-in default.",
-        #         )
-        #         st.caption(f"Sources — UI: {_mask_webhook(st.session_state.webhook_url or '')} | "
-        #                    f"ENV: {st.session_state.webhook_sources.get('env','')} | "
-        #                    f"SECRETS: {st.session_state.webhook_sources.get('secrets','')} | "
-        #                    f"DEFAULT: {st.session_state.webhook_sources.get('default','')}")
-
         start_clicked = st.form_submit_button("Start", type="primary", use_container_width=True)
         if start_clicked:
             if not st.session_state.user or not st.session_state.user.strip():
                 st.error("Please enter a User name to continue.")
             else:
-                _cookie_save_current_settings()
+                # Gate navigation: write cookie, confirm, then move
+                st.session_state._pending_start = True
+                st.session_state._cookie_write_done = False
+                st.session_state._cookie_write_waits = 0
+                st.session_state.needs_rerun = True
+
+    # Handle deferred cookie write/confirm → then navigate
+    if st.session_state._pending_start:
+        if not st.session_state._cookie_write_done:
+            _cookie_save_current_settings()
+            st.session_state._cookie_write_done = True
+            st.session_state.needs_rerun = True
+            st.info("Saving settings…")
+            return  # let the component process the set()
+        else:
+            if _cookie_confirm_written():
+                st.session_state._pending_start = False
+                st.session_state._cookie_write_done = False
+                _start_session(); st.rerun()
+            else:
+                st.session_state._cookie_write_waits += 1
+                if st.session_state._cookie_write_waits < COOKIE_WRITE_TRIES_MAX:
+                    st.session_state.needs_rerun = True
+                    st.info("Saving settings…")
+                    return
+                # Give up politely and continue
+                st.warning("Settings save not confirmed; continuing anyway.")
+                st.session_state._pending_start = False
+                st.session_state._cookie_write_done = False
                 _start_session(); st.rerun()
 
 def screen_practice():

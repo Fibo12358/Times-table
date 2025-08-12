@@ -1,278 +1,86 @@
-# times_tables_streamlit.py — 3 screens + keypad fallback + first-press + auto-submit fixes
-# SAFE MODE defaults ON (minimal CSS). Toggle it off on the Settings screen when you're ready.
-# Version: v1.10.12
+# times_tables_streamlit.py — mobile-first, 3 screens (Start → Practice → Results)
+# Numeric keypad (custom or fallback), auto-submit, first-press fix, spaced repetition
+# Discord webhook notifications with diagnostics (debug mode, test button, response logging)
+# Version: v1.11.8
 
-import math
 import os
+import math
 import time
+import json
 import random
-import base64
+import logging
+from datetime import datetime, timezone
 from pathlib import Path
-from datetime import datetime, timedelta
-from uuid import uuid4
 
+import requests  # <-- uses certifi bundle, avoids local macOS cert issues
 import streamlit as st
 from streamlit.components.v1 import declare_component
 
-# Ensure page configuration happens before any other Streamlit call.
-st.set_page_config(
-    page_title="Times Tables Trainer",
-    page_icon="✳️",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
+APP_VERSION = "v1.11.8"
 
-APP_VERSION = "v1.10.12"
+# ---------------- Logging ----------------
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("ttt")
 
-# ---------------- Local storage helpers ----------------
-LS_COMPONENT_AVAILABLE = False
-LS_LOAD_ERROR = ""
-# When True, missing localStorage component falls back to in-memory store
-LS_FALLBACK_ALLOWED = True
+# ---------------- Discord webhook defaults ----------------
+DISCORD_WEBHOOK_DEFAULT = "https://discord.com/api/webhooks/1404817423475150899/coc3BZJlGyGArEEvTAk5YqK5ev_sSQnsBMczPIu0ikhWX9IZhhLe5Fh6lT6_9eq9ibR3"
 
-def _register_ls_component():
-    """Register the localStorage component with a tiny retry and log errors."""
-    global LS_COMPONENT_AVAILABLE, LS_LOAD_ERROR, ls_component
-    comp_dir = Path(__file__).resolve().parent / "ls_component"
-    for attempt in range(2):
-        try:
-            if comp_dir.exists() and (comp_dir / "index.html").exists():
-                html = (comp_dir / "index.html").read_text(encoding="utf-8")
-                data_url = "data:text/html;base64," + base64.b64encode(html.encode("utf-8")).decode("ascii")
-                ls_component = declare_component("tt_ls", url=data_url)
-                LS_COMPONENT_AVAILABLE = True
-            else:
-                LS_COMPONENT_AVAILABLE = False
-                LS_LOAD_ERROR = f"LocalStorage component not found at: {comp_dir}/index.html"
-                def ls_component(**kwargs):
-                    return None
-            break
-        except Exception as e:
-            LS_COMPONENT_AVAILABLE = False
-            LS_LOAD_ERROR = f"{type(e).__name__}: {e}"
-            def ls_component(**kwargs):
-                return None
-            time.sleep(0.1)
+def _mask_webhook(url: str) -> str:
+    try:
+        parts = url.strip().split("/")
+        if len(parts) >= 2:
+            token = parts[-1]
+            if len(token) > 12:
+                token = token[:6] + "…" + token[-6:]
+            parts[-1] = token
+        return "/".join(parts)
+    except Exception:
+        return "<invalid url>"
 
-    if not LS_COMPONENT_AVAILABLE:
-        msg = f"LS component unavailable; falling back to in-memory store. {LS_LOAD_ERROR}"
-        try:
-            st.warning(msg)
-            st.write(
-                f"<script>console.error('LS_LOAD_ERROR: {LS_LOAD_ERROR}')</script>",
-                unsafe_allow_html=True,
-            )
-        except Exception:
-            print(f"LS_LOAD_ERROR: {LS_LOAD_ERROR}")
+def _secret_webhook() -> str | None:
+    """Safely read st.secrets['discord']['webhook'] without crashing if secrets.toml is missing."""
+    try:
+        return st.secrets["discord"]["webhook"]
+    except Exception:
+        return None
 
-_register_ls_component()
-
-def _ls_store():
-    if "_ls" not in st.session_state:
-        st.session_state._ls = {}
-    return st.session_state._ls
-
-
-_ls_component_counter = 0
-
-
-def _ls_component_key():
-    global _ls_component_counter
-    _ls_component_counter += 1
-    return f"ls_{_ls_component_counter}"
-
-
-def ls_get(key):
-    if LS_COMPONENT_AVAILABLE:
-        res = ls_component(action="get", ls_key=key, key=_ls_component_key(), default=None)
-        if isinstance(res, dict):
-            err = res.get("error") or res.get("ERROR")
-            if err:
-                if not LS_FALLBACK_ALLOWED:
-                    raise RuntimeError(f"localStorage error: {err}")
-                ls_remove(key)
-                return None
-        return res
-    if not LS_FALLBACK_ALLOWED:
-        raise RuntimeError(LS_LOAD_ERROR or "localStorage component unavailable")
-    return _ls_store().get(key)
-
-
-def ls_set(key, value, ttl_days=30):
-    if LS_COMPONENT_AVAILABLE:
-        res = ls_component(action="set", ls_key=key, value=value, ttl_days=ttl_days, key=_ls_component_key(), default=None)
-        if isinstance(res, dict):
-            err = res.get("error") or res.get("ERROR")
-            if err and not LS_FALLBACK_ALLOWED:
-                raise RuntimeError(f"localStorage error: {err}")
-        return res
-    if not LS_FALLBACK_ALLOWED:
-        raise RuntimeError(LS_LOAD_ERROR or "localStorage component unavailable")
-    _ls_store()[key] = value
-    return True
-
-
-def ls_remove(key):
-    if LS_COMPONENT_AVAILABLE:
-        res = ls_component(action="remove", ls_key=key, key=_ls_component_key(), default=None)
-        if isinstance(res, dict):
-            err = res.get("error") or res.get("ERROR")
-            if err and not LS_FALLBACK_ALLOWED:
-                raise RuntimeError(f"localStorage error: {err}")
-        return res
-    if not LS_FALLBACK_ALLOWED:
-        raise RuntimeError(LS_LOAD_ERROR or "localStorage component unavailable")
-    _ls_store().pop(key, None)
-    return True
-
-
-def iso_now_plus_days(days: int) -> str:
-    return (datetime.utcnow() + timedelta(days=days)).isoformat()
-
-
-def ensure_device_id() -> str:
-    ss = st.session_state
-    if ss.get("device_id"):
-        return ss.device_id
-    val = ls_get("tt.device_id.v1")
-    if isinstance(val, dict):
-        dev = val.get("id")
-    elif isinstance(val, str):
-        dev = val
-    else:
-        dev = None
-    if not dev:
-        dev = uuid4().hex
-        ls_set("tt.device_id.v1", {"id": dev}, ttl_days=3650)
-    ss.device_id = dev
-    return dev
-
-
-def persist_settings():
-    ss = st.session_state
-    obj = {
-        "user": ss.user,
-        "min": int(ss.min_table),
-        "max": int(ss.max_table),
-        "secs_per_q": float(ss.per_q),
-        "session_secs": int(ss.total_seconds),
-        "device_id": ensure_device_id(),
-        "expires_at": iso_now_plus_days(30),
-    }
-    ls_set("tt.settings.v1", obj, ttl_days=30)
-
-
-def load_settings_on_boot():
-    ss = st.session_state
-    ss.boot_load_attempts = ss.get("boot_load_attempts", 0) + 1
-    obj = ls_get("tt.settings.v1")
-    if isinstance(obj, dict):
-        if isinstance(obj.get("user"), str):
-            ss.user = obj["user"]
-        if isinstance(obj.get("min"), int):
-            ss.min_table = max(1, min(12, int(obj["min"])))
-        if isinstance(obj.get("max"), int):
-            ss.max_table = max(1, min(12, int(obj["max"])))
-        if isinstance(obj.get("secs_per_q"), (int, float)):
-            ss.per_q = float(obj["secs_per_q"])
-        if isinstance(obj.get("session_secs"), int):
-            ss.total_seconds = max(0, int(obj["session_secs"]))
-    ss.session_mins = ss.total_seconds // 60
-    ss.session_secs = ss.total_seconds % 60
-    if isinstance(obj, dict) or ss.boot_load_attempts >= 2:
-        ss.did_boot_load = True
-    else:
-        ss.needs_rerun = True
-
-
-def _update_session_duration():
-    ss = st.session_state
-    ss.total_seconds = int(ss.session_mins) * 60 + int(ss.session_secs)
-    persist_settings()
-
-
-def render_debug_panel():
-    info = ls_component(action="info", ls_key="tt.settings.v1", key=_ls_component_key(), default={}) if LS_COMPONENT_AVAILABLE else {}
-    st.write("#### Storage debug")
-    if info.get("origin"):
-        st.text(f"Origin: {info.get('origin')}")
-    if info.get("port"):
-        st.text(f"Port: {info.get('port')}")
-    st.text(
-        "localStorage available: "
-        + str(info.get("ls_ok"))
-        + (f" ({info.get('ls_error')})" if info.get("ls_error") else "")
-    )
-    st.text(f"Now (UTC): {info.get('now')}")
-    st.write("Stored tt.settings.v1:")
-    st.json(info.get("stored"))
-    cols = st.columns(2)
-    with cols[0]:
-        if st.button("Self-test"):
-            nonce = uuid4().hex
-            ls_set("tt.test.v1", {"nonce": nonce}, ttl_days=1)
-            st.session_state._debug_nonce = nonce
-            st.rerun()
-    with cols[1]:
-        if st.button("Clear settings"):
-            ls_remove("tt.settings.v1")
-            st.rerun()
-    if "_debug_nonce" in st.session_state:
-        test = ls_get("tt.test.v1")
-        if test and test.get("nonce") == st.session_state._debug_nonce:
-            st.success("Self-test passed")
-        else:
-            st.error("Self-test failed")
-    st.caption("localStorage is per origin (host + port). On port change, storage appears empty.")
-    st.write("Python view:")
-    st.json(ls_get("tt.settings.v1"))
+# ---------------- Page config ----------------
+st.set_page_config(page_title="Times Tables Trainer", page_icon="✳️",
+                   layout="centered", initial_sidebar_state="collapsed")
 
 # ---------------- Query params ----------------
 def _get_qp():
     try:
-        return dict(st.query_params)  # Streamlit >=1.30
+        return dict(st.query_params)  # Streamlit ≥1.30
     except Exception:
         return {k: v for k, v in st.experimental_get_query_params().items()}
 
 _qp = _get_qp()
 _qp_safe = _qp.get("safe", "1")
-if isinstance(_qp_safe, list):  # older APIs may return list
+if isinstance(_qp_safe, list):
     _qp_safe = _qp_safe[0]
 QP_SAFE = str(_qp_safe).lower() in ("1", "true")
-
-# Allow disabling of in-memory localStorage fallback via env var or query param
-_qp_ls_fb = _qp.get("ls_fallback", "1")
-if isinstance(_qp_ls_fb, list):
-    _qp_ls_fb = _qp_ls_fb[0]
-LS_FALLBACK_ALLOWED = not (
-    str(os.getenv("TT_DISABLE_LS_FALLBACK", "")).lower() in ("1", "true", "yes")
-    or str(_qp_ls_fb).lower() in ("0", "false", "no")
-)
 
 # ---------------- State ----------------
 def _init_state():
     ss = st.session_state
 
-    # Safe mode flag (ON by default)
-    ss.setdefault("safe_mode", True if QP_SAFE else False)
+    # Routing: "start" | "practice" | "results"
+    ss.setdefault("screen", "start")
 
-    # Router
-    ss.setdefault("screen", "settings")     # "settings" | "practice" | "report"
+    # Safe mode flag (ON by default; minimal CSS)
+    ss.setdefault("safe_mode", True if QP_SAFE else False)
 
     # Run flags
     ss.setdefault("running", False)
     ss.setdefault("finished", False)
 
-    # Settings defaults
+    # Start screen settings
     ss.setdefault("user", "")
     ss.setdefault("min_table", 2)
     ss.setdefault("max_table", 12)
-    ss.setdefault("total_seconds", 180)
-    ss.setdefault("per_q", 10.0)  # per-question seconds
-    ss.setdefault("session_mins", ss.total_seconds // 60)
-    ss.setdefault("session_secs", ss.total_seconds % 60)
-    ss.setdefault("did_boot_load", False)
-    ss.setdefault("boot_load_attempts", 0)
+    ss.setdefault("total_seconds", 180)     # session length (seconds); UI shows minutes only
+    ss.setdefault("per_q", 10)              # per-question seconds
 
     # Timers
     ss.setdefault("session_start", 0.0)
@@ -290,7 +98,7 @@ def _init_state():
     ss.setdefault("correct_questions", 0)
     ss.setdefault("total_time_spent", 0.0)
 
-    # Tracking (lists for safe serialisation)
+    # Tracking for spaced repetition
     ss.setdefault("wrong_attempt_items", [])
     ss.setdefault("missed_items", [])
     ss.setdefault("wrong_twice", [])
@@ -305,9 +113,20 @@ def _init_state():
     ss.setdefault("pending_correct", False)
     ss.setdefault("last_kp_seq", -1)
 
+    # Diagnostics / webhook config (precedence: UI > env > secrets > default)
+    env_hook = os.getenv("DISCORD_WEBHOOK")
+    sec_hook = _secret_webhook()
+    default_hook = DISCORD_WEBHOOK_DEFAULT
+    ss.setdefault("webhook_url", env_hook or sec_hook or default_hook)
+    ss.setdefault("debug_mode", False)
+    ss.setdefault("last_webhook", {})  # dict with last attempt details
+    ss.setdefault("webhook_sources", {
+        "ui": None, "env": _mask_webhook(env_hook or ""),
+        "secrets": _mask_webhook(sec_hook or ""),
+        "default": _mask_webhook(default_hook)
+    })
+
 _init_state()
-if not st.session_state.did_boot_load:
-    load_settings_on_boot()
 
 # ---------------- Keypad component (with fallback) ----------------
 KP_COMPONENT_AVAILABLE = False
@@ -315,14 +134,14 @@ KP_LOAD_ERROR = ""
 def _register_keypad_component():
     global KP_COMPONENT_AVAILABLE, KP_LOAD_ERROR, keypad
     try:
-        comp_dir = Path(__file__).resolve().parent / "keypad_component"
+        comp_dir = Path(__file__).with_name("keypad_component")
         if comp_dir.exists() and (comp_dir / "index.html").exists():
             keypad = declare_component("tt_keypad", path=str(comp_dir))  # returns "CODE|SEQ" or None
             KP_COMPONENT_AVAILABLE = True
         else:
             KP_COMPONENT_AVAILABLE = False
             KP_LOAD_ERROR = f"Keypad component not found at: {comp_dir}/index.html"
-            def keypad(default=None, key=None):
+            def keypad(default=None, key=None):  # fallback signature
                 return None
     except Exception as e:
         KP_COMPONENT_AVAILABLE = False
@@ -332,57 +151,41 @@ def _register_keypad_component():
 
 _register_keypad_component()
 
-# ---------------- Styles ----------------
+# ---------------- Styles (mobile-first) ----------------
 if not st.session_state.safe_mode:
-    # Fancy CSS: no scroll, hidden chrome, compact layout
     st.markdown("""
     <style>
-    div[data-testid="stToolbar"], div[data-testid="stDecoration"], header, footer, #MainMenu { display: none !important; }
-    html, body, [data-testid="stAppViewContainer"] { height:100dvh; overflow:hidden; }
-    .block-container{ max-width:460px !important; padding-top:0; padding-bottom:0; padding-left:12px; padding-right:12px; }
-    .tt-screen{height:100dvh; box-sizing:border-box; display:flex; flex-direction:column;}
-    @supports not (height:100dvh){.tt-screen{height:100vh;}}
-    .tt-settings{padding:12px 14px 10px; gap:8px;}
-    .tt-header{height:40px; min-height:40px; display:flex; align-items:center; gap:8px;}
-    .tt-header *{margin:0;}
-    .tt-prompt{flex:1 1 auto; display:flex; align-items:center; justify-content:center;}
-    .tt-prompt h1{font-size:clamp(36px,10vw,64px); line-height:1; margin:0;}
-    .tt-keypad{flex:0 0 auto; height:clamp(248px,40dvh,320px);}
-    .tt-report{padding:10px 14px; display:flex; flex-direction:column; gap:10px; overflow:hidden;}
-    .tt-metrics{display:grid; grid-template-columns:repeat(4,1fr); gap:8px;}
-    .tt-list{flex:1 1 auto; overflow:auto; border-top:1px solid #334155; padding-top:8px;}
-    .tt-spark{height:120px;}
-    .tt-streak{text-align:center; font-weight:600;}
-    :root{--bg:#0b1220;--text:#f8fafc;--muted:#94a3b8;--blue:#60a5fa;--ok-bg:#ecfdf5;--ok-bd:#16a34a;--ok-fg:#065f46;--bad-bg:#fef2f2;--bad-bd:#dc2626;--bad-fg:#7f1d1d;}
-    html, body{background:var(--bg); color:var(--text);}
-    .tt-timer{font-variant-numeric:tabular-nums; font-weight:700; font-size:16px; line-height:1;}
-    .answer-display{font-size:2rem; font-weight:700; text-align:center; padding:.28rem .5rem; border:2px solid #334155; border-radius:.6rem; background:#0f172a; color:var(--text);}
-    .answer-display.ok{background:var(--ok-bg); border:3px dashed var(--ok-bd); color:var(--ok-fg);}
-    .answer-display.bad{background:var(--bad-bg); border:3px solid var(--bad-bd); color:var(--bad-fg);}
-    .stButton>button[kind="primary"]{background:var(--blue) !important; color:#0b1220 !important; border:none !important; font-weight:700; width:100%;}
-    .stButton>button{min-height:44px;}
-    @keyframes shake{10%,90%{transform:translateX(-1px);}20%,80%{transform:translateX(2px);}30%,50%,70%{transform:translateX(-4px);}40%,60%{transform:translateX(4px);}}
-    .shake{animation:shake .4s linear both;}
-    .version-badge{position:fixed; bottom:6px; left:50%; transform:translateX(-50%); font-size:.75rem; color:#94a3b8; opacity:.85; pointer-events:none;}
+      div[data-testid="stToolbar"], div[data-testid="stDecoration"], header, footer, #MainMenu { display: none !important; }
+      .block-container{ max-width: 440px !important; padding: 8px 12px !important; }
+      html, body { background:#0b1220; color:#f8fafc; }
+      :root{ --muted:#94a3b8; --blue:#60a5fa; --ok-bg:#ecfdf5; --ok-bd:#16a34a; --ok-fg:#065f46; --bad-bg:#fef2f2; --bad-bd:#dc2626; --bad-fg:#7f1d1d; }
+      .tt-prompt h1 { font-size: clamp(48px, 15vw, 88px); line-height: 1; margin: 4px 0 0; text-align:center; }
+      .answer-display{ font-size:2rem; font-weight:700; text-align:center; padding:.32rem .6rem; border:2px solid #334155; border-radius:.6rem; background:#0f172a; color:#f8fafc; }
+      .answer-display.ok{ background:var(--ok-bg); border:3px dashed var(--ok-bd); color:var(--ok-fg); }
+      .answer-display.bad{ background:var(--bad-bg); border:3px solid var(--bad-bd); color:var(--bad-fg); }
+      .stButton>button[kind="primary"]{ background:var(--blue) !important; color:#0b1220 !important; border:none !important; font-weight:700; width:100%; min-height:48px; }
+      .stButton>button{ min-height:44px; width:100%; }
+      .tt-metrics { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; }
+      .tt-footer { color:var(--muted); font-size:.75rem; text-align:center; margin-top:2px; }
+      @keyframes shake{10%,90%{transform:translateX(-1px);}20%,80%{transform:translateX(2px);}30%,50%,70%{transform:translateX(-4px);}40%,60%{transform:translateX(4px);} }
+      .shake{ animation:shake .4s linear both; }
+      .barwrap{ background:#0f172a; border:1px solid #334155; border-radius:10px; height:10px; overflow:hidden; }
+      .barfill{ background:linear-gradient(90deg, #60a5fa, #93c5fd); height:100%; width:0%; transition:width .12s linear; }
+      .barlabel{ display:flex; justify-content:space-between; font-size:.8rem; color:#94a3b8; margin:2px 2px 6px; }
     </style>
     """, unsafe_allow_html=True)
 else:
-    # Minimal CSS so errors and content are always visible
     st.markdown("""
     <style>
-    html, body, [data-testid="stAppViewContainer"] { height:100dvh; }
-    @supports not (height:100dvh){ html, body, [data-testid="stAppViewContainer"]{ height:100vh; } }
-    .block-container{ max-width:640px; padding-top:0; padding-bottom:0; }
-    .tt-screen{height:100dvh; display:flex; flex-direction:column;}
-    @supports not (height:100dvh){.tt-screen{height:100vh;}}
-    .tt-header{height:40px; min-height:40px; display:flex; align-items:center; gap:8px;}
-    .tt-header *{margin:0;}
-    .tt-timer{font-variant-numeric:tabular-nums; font-weight:700; font-size:16px; line-height:1;}
-    .tt-prompt{flex:1 1 auto; display:flex; align-items:center; justify-content:center;}
-    .tt-keypad{flex:0 0 auto; height:clamp(248px,40dvh,320px);}
-    .answer-display{font-size:1.6rem; font-weight:700; text-align:center; padding:.25rem .5rem; border:1px solid #999; border-radius:.5rem; background:#111; color:#eee;}
-    .tt-prompt h1{font-size:clamp(36px,10vw,64px); line-height:1; margin:0;}
-    .stButton>button{min-height:42px;}
+      .block-container{ max_width: 460px; }
+      .tt-prompt h1 { font-size: 56px; line-height:1; margin: .25rem 0 0; text-align:center; }
+      .answer-display{ font-size:1.6rem; font-weight:700; text-align:center; padding:.25rem .5rem; border:1px solid #999; border-radius:.5rem; background:#111; color:#eee; }
+      .stButton>button{ min-height:42px; width:100%; }
+      .tt-metrics { display:grid; grid-template-columns:repeat(2,1fr); gap:6px; }
+      .tt-footer { color:#888; font-size:.8rem; text-align:center; margin-top:4px; }
+      .barwrap{ background:#111; border:1px solid #999; border-radius:10px; height:10px; overflow:hidden; }
+      .barfill{ background:#6aa0ff; height:100%; width:0%; transition:width .12s linear; }
+      .barlabel{ display:flex; justify-content:space-between; font-size:.8rem; color:#aaa; margin:2px 2px 6px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -428,6 +231,75 @@ def _new_question():
     ss.ok_until = 0.0
     ss.shake_until = 0.0
 
+def _build_results_text():
+    ss = st.session_state
+    total = ss.total_questions or 1
+    pct = round(100 * (ss.correct_questions / total))
+    wrong = ", ".join(
+        f"{a}×{b}" + (" (×2)" if (a, b) in ss.wrong_twice else "")
+        for (a, b) in sorted(set(ss.wrong_attempt_items))
+    ) or "None"
+    lines = [
+        "**Times Tables Results**",
+        f"User: {ss.user or 'Anonymous'}",
+        f"Score: {ss.correct_questions}/{ss.total_questions} ({pct}%)",
+        f"Avg: {ss.total_time_spent/total:.2f}s  •  Time: {ss.total_time_spent:.0f}s",
+        f"Revisit: {wrong}"
+    ]
+    return "\n".join(lines)
+
+def _get_webhook_url() -> str:
+    ss = st.session_state
+    # precedence: UI > env > secrets > default
+    ui = (ss.webhook_url or "").strip()
+    env_ = (os.getenv("DISCORD_WEBHOOK") or "").strip()
+    sec_ = (_secret_webhook() or "").strip()
+    eff = ui or env_ or sec_ or DISCORD_WEBHOOK_DEFAULT
+    ss.webhook_sources.update({
+        "ui": _mask_webhook(ui),
+        "env": _mask_webhook(env_),
+        "secrets": _mask_webhook(sec_),
+        "default": _mask_webhook(DISCORD_WEBHOOK_DEFAULT),
+    })
+    return eff
+
+def _send_results_discord(text: str | None = None):
+    """POST to Discord webhook with requests (uses certifi bundle)."""
+    url = _get_webhook_url()
+    ss = st.session_state
+
+    content = (text or _build_results_text()).strip()
+    if len(content) > 1900:
+        content = content[:1900] + "…"
+
+    payload = {"content": content}
+    attempt_info = {
+        "when": datetime.now(timezone.utc).isoformat(),
+        "url": _mask_webhook(url),
+        "bytes": len(json.dumps(payload)),
+        "content_preview": content[:200] + ("…" if len(content) > 200 else ""),
+        "sources": ss.webhook_sources.copy(),
+    }
+
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        attempt_info.update({"status": r.status_code, "ok": r.ok, "response": (r.text or "")[:500]})
+        if r.ok:
+            logger.info("Discord webhook success (status %s)", r.status_code)
+        else:
+            logger.error("Discord webhook non-2xx (status %s): %s", r.status_code, (r.text or "")[:200])
+    except requests.exceptions.SSLError as e:
+        attempt_info.update({"status": None, "ok": False, "error": f"SSLError: {e}"})
+        logger.exception("Discord webhook SSL error")
+    except requests.exceptions.RequestException as e:
+        attempt_info.update({"status": None, "ok": False, "error": f"RequestException: {e}"})
+        logger.exception("Discord webhook request error")
+    except Exception as e:
+        attempt_info.update({"status": None, "ok": False, "error": f"{type(e).__name__}: {e}"})
+        logger.exception("Discord webhook unexpected error")
+
+    ss.last_webhook = attempt_info
+
 def _start_session():
     ss = st.session_state
     ss.running = True
@@ -446,37 +318,14 @@ def _start_session():
     ss.screen = "practice"
     ss.needs_rerun = True
 
-def _persist_settings():
-    key = "tt.settings.v1"
-    settings = ls_get(key) or {
-        "user": st.session_state.user,
-        "min": st.session_state.min_table,
-        "max": st.session_state.max_table,
-        "session_secs": st.session_state.total_seconds,
-        "device_id": st.session_state.get("device_id", ""),
-    }
-    settings["secs_per_q"] = round(float(st.session_state.per_q), 1)
-    settings["expires_at"] = (datetime.utcnow() + timedelta(days=30)).isoformat()
-    ls_set(key, settings, ttl_days=30)
-
 def _end_session():
     ss = st.session_state
     ss.running = False
     ss.finished = True
     ss.awaiting_answer = False
-    ss.screen = "report"
-    _persist_settings()
+    _send_results_discord()  # send automatically
+    ss.screen = "results"
     ss.needs_rerun = True
-
-
-def _update_baseline(correct: bool, timed_out: bool, duration: float):
-    b = float(st.session_state.per_q)
-    if (not correct) or timed_out:
-        b = min(30.0, round(b * 1.10, 1))
-    else:
-        if duration <= 0.5 * b:
-            b = max(2.0, round(b * 0.90, 1))
-    st.session_state.per_q = float(b)
 
 def _record_question(correct: bool, timed_out: bool):
     ss = st.session_state
@@ -503,7 +352,6 @@ def _record_question(correct: bool, timed_out: bool):
                 ss.wrong_twice.append(item)
             ss.scheduled_repeats = [s for s in ss.scheduled_repeats if s["item"] != item]
 
-    _update_baseline(correct, timed_out, duration)
     ss.awaiting_answer = False
     _new_question()
     ss.needs_rerun = True
@@ -537,7 +385,7 @@ def _handle_keypad_payload(payload):
         try:
             seq = int(seq_s)
         except Exception:
-            seq = None   # treat as unsequenced
+            seq = None
     else:
         code = text
 
@@ -546,13 +394,23 @@ def _handle_keypad_payload(payload):
         st.session_state.last_kp_seq = (last + 1) if (seq is None) else seq
         _kp_apply(code)
 
-def _timers_compact_row(now_ts: float):
-    q_left = st.session_state.q_deadline - now_ts if st.session_state.running else 0.0
-    s_left = st.session_state.deadline - now_ts if st.session_state.running else 0.0
-    st.markdown(
-        f"<div class='tt-header'><div class='tt-timer'>{math.ceil(max(0, q_left))} s</div><div class='tt-timer'>{math.ceil(max(0, s_left))} s</div></div>",
-        unsafe_allow_html=True,
-    )
+# ---------- Timer bars (Practice only) ----------
+def _timer_bars(now_ts: float):
+    ss = st.session_state
+    q_total = max(1e-6, float(ss.per_q))
+    s_total = max(1e-6, float(ss.total_seconds))
+    q_left = max(0.0, (ss.q_deadline - now_ts) if ss.running else 0.0)
+    s_left = max(0.0, (ss.deadline - now_ts) if ss.running else 0.0)
+    q_pct = max(0.0, min(100.0, 100.0 * q_left / q_total))
+    s_pct = max(0.0, min(100.0, 100.0 * s_left / s_total))
+
+    c1, c2 = st.columns(2, gap="small")
+    with c1:
+        st.markdown("<div class='barlabel'><span>Per-question</span></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='barwrap'><div class='barfill' style='width:{q_pct:.0f}%'></div></div>", unsafe_allow_html=True)
+    with c2:
+        st.markdown("<div class='barlabel'><span>Session</span></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='barwrap'><div class='barfill' style='width:{s_pct:.0f}%'></div></div>", unsafe_allow_html=True)
 
 # ---------- Fallback keypad ----------
 def _kp_click(code: str): _kp_apply(code)
@@ -568,88 +426,84 @@ def render_fallback_keypad():
     with cols[2]: st.button("Back", use_container_width=True, on_click=_kp_click, args=("B",))
 
 # ---------------- Screens ----------------
-def screen_settings():
-    st.write("### Times Tables — Settings")
+def screen_start():
+    st.write("### Start")
 
-    # Safe-mode toggle (for you): off = fancy CSS; on = minimal CSS
+    # Safe-mode toggle (off = fancy CSS; on = minimal CSS)
     st.session_state.safe_mode = st.toggle(
         "Safe mode (minimal CSS)",
         value=st.session_state.safe_mode,
-        help="Turn off to enable the no-scroll/hidden-chrome layout"
+        help="Turn off to enable the compact, mobile-first theme"
     )
 
     if KP_LOAD_ERROR:
         st.info(f"Keypad component: {KP_LOAD_ERROR}. Using fallback keypad.", icon="ℹ️")
 
-    c1, c2 = st.columns([1, 1], gap="small")
-    with c1:
-        st.text_input("User", max_chars=32, placeholder="Name or ID", key="user", on_change=persist_settings)
-        st.number_input("Min table", 1, 12, step=1, key="min_table", on_change=persist_settings)
-    with c2:
-        st.number_input("Max table", 1, 12, step=1, key="max_table", on_change=persist_settings)
-        st.number_input(
-            "Seconds per question",
-            2.0,
-            30.0,
-            step=0.5,
-            key="per_q",
-            on_change=persist_settings,
-        )
+    # Start controls live in a form. Use ONLY form submit buttons inside.
+    with st.form("start_form", clear_on_submit=False):
+        c1, c2 = st.columns([1, 1], gap="small")
+        with c1:
+            st.session_state.user = st.text_input("User", st.session_state.user, max_chars=32, placeholder="Name or ID")
+            st.session_state.min_table = int(st.number_input("Min table", 1, 12, value=st.session_state.min_table, step=1))
+        with c2:
+            st.session_state.max_table = int(st.number_input("Max table", 1, 12, value=st.session_state.max_table, step=1))
+            st.session_state.per_q = int(st.number_input("Seconds per question", 2, 30, value=st.session_state.per_q, step=1))
 
-    c3, c4 = st.columns([1, 1], gap="small")
-    with c3:
-        st.number_input("Session minutes", 0, 180, step=1, key="session_mins", on_change=_update_session_duration)
-        st.number_input("Session seconds", 0, 59, step=1, key="session_secs", on_change=_update_session_duration)
-    with c4:
-        st.write("")
-        if st.button("Start", type="primary", use_container_width=True):
-            persist_settings(); _start_session(); st.rerun()
+        mins = st.number_input("Session minutes", 0, 180, value=st.session_state.total_seconds // 60, step=1)
+        st.session_state.total_seconds = int(mins) * 60
 
-    if st.session_state.min_table > st.session_state.max_table:
-        st.session_state.min_table, st.session_state.max_table = st.session_state.max_table, st.session_state.min_table
+        if st.session_state.min_table > st.session_state.max_table:
+            st.session_state.min_table, st.session_state.max_table = st.session_state.max_table, st.session_state.min_table
 
-    st.session_state.show_debug = st.toggle("Debug storage", value=st.session_state.get("show_debug", False))
-    if st.session_state.show_debug:
-        render_debug_panel()
+        with st.expander("Advanced"):
+            st.session_state.webhook_url = st.text_input(
+                "Discord webhook URL (effective)",
+                value=st.session_state.webhook_url,
+                help="Precedence: this field > DISCORD_WEBHOOK env var > secrets.toml > built-in default.",
+            )
+            st.caption(f"Sources — UI: {_mask_webhook(st.session_state.webhook_url or '')} | "
+                       f"ENV: {st.session_state.webhook_sources.get('env','')} | "
+                       f"SECRETS: {st.session_state.webhook_sources.get('secrets','')} | "
+                       f"DEFAULT: {st.session_state.webhook_sources.get('default','')}")
+            st.session_state.debug_mode = st.checkbox(
+                "Debug mode (log webhook attempts and show diagnostics here)",
+                value=st.session_state.debug_mode,
+            )
+            test_clicked = st.form_submit_button("Send test message to Discord", use_container_width=True)
+            if test_clicked:
+                _send_results_discord(text=f"**Test** — Times Tables Trainer {APP_VERSION} ping at {datetime.utcnow().isoformat()}Z")
+            if st.session_state.debug_mode and st.session_state.last_webhook:
+                st.markdown("**Last webhook attempt**")
+                st.json(st.session_state.last_webhook)
+
+        start_clicked = st.form_submit_button("Start", type="primary", use_container_width=True)
+        if start_clicked:
+            _start_session(); st.rerun()
 
 def screen_practice():
     now_ts = _now()
     _tick(now_ts)
 
-    _timers_compact_row(now_ts)
+    # Timer bars only (no numeric countdowns; no stats)
+    _timer_bars(now_ts)
 
-    # Keep visual order: prompt above keypad; but render keypad first to read payload this run.
-    top_area = st.container()
+    # Placeholders in UI order
+    prompt_area = st.container()   # 1) multiplication prompt
+    answer_area = st.container()   # 2) answer field + caption
+    keypad_area = st.container()   # 3) keypad
 
-    # Reuse a stable container for the keypad and clear it each run so old
-    # fallback keypads do not linger if the custom component loads later.
-    if "_keypad_area" not in st.session_state:
-        st.session_state._keypad_area = st.empty()
-    # Clear existing content and persist the refreshed placeholder
-    st.session_state._keypad_area = st.session_state._keypad_area.empty()
-
-    # --- Keypad (render first) ---
-    with st.session_state._keypad_area.container():
-        # Reserve space so the keypad doesn't collapse while the custom
-        # component bootstraps. This avoids the keypad appearing "missing"
-        # on slow connections where the iframe reports its height late.
-        st.markdown("<div class='tt-keypad'>", unsafe_allow_html=True)
-
-        payload = None
+    # Render keypad FIRST (for event capture), but INTO the third placeholder
+    with keypad_area:
         if KP_COMPONENT_AVAILABLE:
             payload = keypad(default=None)  # "CODE|SEQ" or None
-            kp_kind = "custom"
         else:
+            payload = None
             render_fallback_keypad()
-            kp_kind = "fallback"
 
-        st.markdown("</div>", unsafe_allow_html=True)
-        st.caption(f"Keypad: {kp_kind}")
-
-    # Process keypad event (first-press fix)
+    # Apply keypad event
     _handle_keypad_payload(payload)
 
-    # Auto-submit when required digits reached
+    # Auto-submit when the required digit count is reached
     if st.session_state.awaiting_answer:
         target = st.session_state.a * st.session_state.b
         need = _required_digits()
@@ -663,33 +517,39 @@ def screen_practice():
                     st.session_state.awaiting_answer = False
                     st.session_state.pending_correct = True
                     st.session_state.ok_until = now_ts + 0.6
-                    st.session_state.needs_rerun = True  # trigger the green-flash cycle immediately
+                    st.session_state.needs_rerun = True
                 else:
                     st.session_state.entry = ""
                     if (st.session_state.a, st.session_state.b) not in st.session_state.wrong_attempt_items:
                         st.session_state.wrong_attempt_items.append((st.session_state.a, st.session_state.b))
                     st.session_state.shake_until = now_ts + 0.45
 
-    # Finalise correct after the green flash (no extra keypress needed)
+    # Finalise correct after the green flash
     if st.session_state.pending_correct and now_ts >= st.session_state.ok_until:
         st.session_state.pending_correct = False
         _record_question(True, False)
 
-    # --- Prompt + entry (draw after processing so it reflects the latest state) ---
-    with top_area:
+    # 1) Prompt
+    with prompt_area:
         st.markdown(f"<div class='tt-prompt'><h1>{st.session_state.a} × {st.session_state.b}</h1></div>", unsafe_allow_html=True)
+
+    # 2) Answer field
+    with answer_area:
         classes = ["answer-display"]
         if st.session_state.pending_correct and now_ts < st.session_state.ok_until: classes.append("ok")
         elif now_ts < st.session_state.shake_until: classes += ["bad","shake"]
         st.markdown(f"<div class='{' '.join(classes)}'>{st.session_state.entry or '&nbsp;'}</div>", unsafe_allow_html=True)
+        st.caption(f"Auto-submit after {_required_digits()} digit{'s' if _required_digits()>1 else ''}")
 
-def screen_report():
+def screen_results():
     total = st.session_state.total_questions
     correct = st.session_state.correct_questions
     avg = (st.session_state.total_time_spent / total) if total else 0.0
     pct = (100.0 * correct / total) if total else 0.0
 
-    st.write("### Session report")
+    st.write("### Results")
+
+    # Results-only stats
     cols = st.columns(4, gap="small")
     data = [("Correct", f"{pct:0.0f}%"), ("Questions", str(total)),
             ("Avg time", f"{avg:0.2f} s"), ("Time spent", f"{st.session_state.total_time_spent:0.0f} s")]
@@ -699,36 +559,40 @@ def screen_report():
     st.markdown("##### Items to revisit")
     wrong_any = sorted(list(set(st.session_state.wrong_attempt_items)))
     if wrong_any:
-        for a, b in wrong_any:
-            extra = " — wrong twice" if (a, b) in st.session_state.wrong_twice else ""
-            st.write(f"{a} × {b}{extra}")
+        st.write("\n".join([f"{a} × {b}{' — wrong twice' if (a, b) in st.session_state.wrong_twice else ''}" for a, b in wrong_any]))
     else:
         st.write("None.")
+
+    # Diagnostics panel also visible on Results
+    if st.session_state.debug_mode and st.session_state.last_webhook:
+        with st.expander("Debug — last webhook attempt"):
+            st.json(st.session_state.last_webhook)
 
     c1, c2 = st.columns(2, gap="small")
     with c1:
         if st.button("Again", type="primary", use_container_width=True):
             _start_session(); st.rerun()
     with c2:
-        if st.button("Settings", use_container_width=True):
-            st.session_state.screen = "settings"; st.rerun()
+        if st.button("Back to Start", use_container_width=True):
+            st.session_state.screen = "start"; st.rerun()
 
-# ---------------- Router + footer ----------------
+# ---------------- Router + heartbeat ----------------
 def _render():
     try:
-        if st.session_state.screen == "settings":
-            screen_settings()
-        elif st.session_state.screen == "practice":
+        screen = st.session_state.screen
+        if screen == "start":
+            screen_start()
+        elif screen == "practice":
             screen_practice()
         else:
-            screen_report()
+            screen_results()
     except Exception as e:
         st.error("Unhandled exception while rendering.")
         st.exception(e)
 
     st.caption(f"Times Tables Trainer {APP_VERSION} — Keypad={'custom' if KP_COMPONENT_AVAILABLE else 'fallback'} — SAFE_MODE={'on' if st.session_state.safe_mode else 'off'}")
 
-    # Heartbeat (always on so green flash and timers progress without extra keypress)
+    # Heartbeat (progress timers / flashes without user input)
     if st.session_state.needs_rerun:
         st.session_state.needs_rerun = False
         st.rerun()

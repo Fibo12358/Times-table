@@ -1,8 +1,8 @@
 # times_tables_streamlit.py — mobile-first, 3 screens (Start → Practice → Results)
-# Numeric keypad (custom or fallback), auto-submit, first-press fix, spaced repetition
-# Discord webhook notifications (requests), streamlined UI
-# Persist Start-screen settings per device using browser cookies (extra-streamlit-components)
-# Version: v1.13.1
+# Numeric keypad (custom or fallback), auto-submit, spaced repetition
+# Discord webhook notifications, streamlined UI
+# Persist Start-screen settings per device using browser cookies (EncryptedCookieManager)
+# Version: v1.13.2
 
 import os
 import time
@@ -15,9 +15,9 @@ from pathlib import Path
 import requests
 import streamlit as st
 from streamlit.components.v1 import declare_component
-import extra_streamlit_components as stx  # CookieManager
+from streamlit_cookies_manager import EncryptedCookieManager  # ← new, robust cookies
 
-APP_VERSION = "v1.13.1"
+APP_VERSION = "v1.13.2"
 
 # ---------------- Logging ----------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -69,38 +69,29 @@ if not DEBUG:
 # Global theme/css
 st.markdown("""
 <style>
-  /* Layout + theme */
   .block-container{ max-width: 440px !important; padding: 8px 12px !important; }
   html, body { background:#0b1220; color:#f8fafc; }
-
   :root{
     --muted:#94a3b8; --blue:#60a5fa; --blue2:#93c5fd;
     --ok-bg:#ecfdf5; --ok-bd:#16a34a; --ok-fg:#065f46;
     --bad-bg:#fef2f2; --bad-bd:#dc2626; --bad-fg:#7f1d1d;
     --slate:#0f172a; --slate-bd:#334155; --chip:#1f2937;
-    --amber:#fbbf24; --amber2:#f59e0b; /* per-question bar */
+    --amber:#fbbf24; --amber2:#f59e0b;
   }
-
   .tt-prompt h1 { font-size: clamp(48px, 15vw, 88px); line-height: 1; margin: 4px 0 0; text-align:center; }
   .answer-display{ font-size:2rem; font-weight:700; text-align:center; padding:.32rem .6rem; border:2px solid var(--slate-bd); border-radius:.6rem; background:var(--slate); color:#f8fafc; }
-  .answer-display.ok{ background:var(--ok-bg); border:3px dashed var(--ok-bd); color:var(--ok-fg); }
+  .answer-display.ok{ background:var(--ok-bg); border:3px dashed var(--ok-bd); color:#065f46; }
   .answer-display.bad{ background:var(--bad-bg); border:3px solid var(--bad-bd); color:#7f1d1d; }
-
   .stButton>button[kind="primary"]{ background:var(--blue) !important; color:#0b1220 !important; border:none !important; font-weight:700; width:100%; min-height:48px; }
   .stButton>button{ min-height:44px; width:100%; }
-
   @keyframes shake{10%,90%{transform:translateX(-1px);}20%,80%{transform:translateX(2px);}30%,50%,70%{transform:translateX(-4px);}40%,60%{transform:translateX(4px);} }
   .shake{ animation:shake .4s linear both; }
-
-  /* Bars */
-  .barwrap{ background:var(--slate); border:1px solid var(--slate-bd); border-radius:10px; height:12px; overflow:hidden; }
+  .barwrap{ background:#0f172a; border:1px solid var(--slate-bd); border-radius:10px; height:12px; overflow:hidden; }
   .barlabel{ display:flex; justify-content:space-between; font-size:.86rem; color:var(--muted); margin:4px 2px 6px; }
   .barfill-q{ background:linear-gradient(90deg, var(--amber), var(--amber2)); height:100%; width:0%; transition:width .12s linear; }
   .barfill-s{ background:linear-gradient(90deg, var(--blue), var(--blue2)); height:100%; width:0%; transition:width .12s linear; }
-
-  /* Results dashboard */
   .dash{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:6px; }
-  .card{ background:var(--slate); border:1px solid var(--slate-bd); border-radius:12px; padding:10px 12px; }
+  .card{ background:#0f172a; border:1px solid var(--slate-bd); border-radius:12px; padding:10px 12px; }
   .card .lab{ color:var(--muted); font-size:.85rem; margin-bottom:4px; }
   .card .val{ font-weight:800; font-size:1.6rem; }
   .hero{ text-align:center; margin:2px 0 6px; }
@@ -110,57 +101,38 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------- Cookie persistence ----------------
-COOKIE_KEY = "ttt_settings_v1"
-COOKIE_TRIES_MAX = 8  # read retries on first paint
-COOKIE_WRITE_TRIES_MAX = 6  # ensure a render confirms write before navigation
+# ---------------- Cookies (EncryptedCookieManager) ----------------
+COOKIE_PREFIX = "ttt/"
+COOKIE_SETTINGS_KEY = "settings"
 
-def _cookie_manager():
-    # Fixed key prevents remount jitter
-    cm = st.session_state.get("_cookie_mgr")
-    if cm is None:
-        cm = stx.CookieManager(key="cookies")
-        st.session_state._cookie_mgr = cm
-    return cm
+cookies = EncryptedCookieManager(
+    prefix=COOKIE_PREFIX,
+    # For cloud, set a proper secret in the environment or secrets.
+    password=os.environ.get("COOKIES_PASSWORD", os.environ.get("COOKIE_PASSWORD", "insecure-dev-cookie-key")),
+)
 
-def _cookie_load_once_with_retries():
-    """Try several renders so the frontend component has time to initialise."""
-    ss = st.session_state
-    if ss.get("_cookie_loaded", False):
-        return
-    tries = ss.get("_cookie_tries", 0)
+# Block until the component is ready and current cookies are available
+if not cookies.ready():
+    st.stop()
 
-    cm = _cookie_manager()
-    raw = None
+def _cookies_read_apply():
+    raw = cookies.get(COOKIE_SETTINGS_KEY)
+    if not raw:
+        return False
     try:
-        raw = cm.get(COOKIE_KEY)
+        data = json.loads(raw)
+        ss = st.session_state
+        ss.user = str(data.get("user", ss.user))
+        ss.min_table = int(data.get("min_table", ss.min_table))
+        ss.max_table = int(data.get("max_table", ss.max_table))
+        ss.per_q = int(data.get("per_q", ss.per_q))
+        mins = int(data.get("minutes", (ss.total_seconds // 60)))
+        ss.total_seconds = max(0, mins) * 60
+        return True
     except Exception:
-        raw = None
+        return False
 
-    if raw:
-        try:
-            data = json.loads(raw)
-            ss.user = str(data.get("user", ss.user))
-            ss.min_table = int(data.get("min_table", ss.min_table))
-            ss.max_table = int(data.get("max_table", ss.max_table))
-            ss.per_q = int(data.get("per_q", ss.per_q))
-            mins = int(data.get("minutes", (ss.total_seconds // 60)))
-            ss.total_seconds = max(0, mins) * 60
-        except Exception:
-            pass
-        ss._cookie_loaded = True
-        ss.needs_rerun = True
-        return
-
-    # Retry a few times; component often needs 1–2 renders
-    tries += 1
-    ss._cookie_tries = tries
-    if tries < COOKIE_TRIES_MAX:
-        ss.needs_rerun = True
-    else:
-        ss._cookie_loaded = True  # give up quietly after retries
-
-def _cookie_save_current_settings():
+def _cookies_save_current_settings():
     ss = st.session_state
     payload = json.dumps({
         "user": ss.user,
@@ -169,21 +141,8 @@ def _cookie_save_current_settings():
         "per_q": ss.per_q,
         "minutes": ss.total_seconds // 60,
     })
-    cm = _cookie_manager()
-    try:
-        cm.set(COOKIE_KEY, payload, expires_at=(datetime.utcnow() + timedelta(days=365)))
-        ss._cookie_last_written = payload
-    except Exception as e:
-        logger.warning("Cookie set failed: %s", e)
-
-def _cookie_confirm_written() -> bool:
-    """Read back to confirm persistence."""
-    try:
-        cm = _cookie_manager()
-        raw = cm.get(COOKIE_KEY)
-        return bool(raw)
-    except Exception:
-        return False
+    cookies[COOKIE_SETTINGS_KEY] = payload
+    cookies.save()  # flush immediately
 
 # ---------------- State ----------------
 def _init_state():
@@ -192,37 +151,31 @@ def _init_state():
     ss.setdefault("running", False)
     ss.setdefault("finished", False)
 
-    # Start screen settings
     ss.setdefault("user", "")
     ss.setdefault("min_table", 2)
     ss.setdefault("max_table", 12)
-    ss.setdefault("total_seconds", 180)     # session length (seconds)
-    ss.setdefault("per_q", 10)              # per-question seconds
+    ss.setdefault("total_seconds", 180)
+    ss.setdefault("per_q", 10)
 
-    # Timers
     ss.setdefault("session_start", 0.0)
     ss.setdefault("deadline", 0.0)
     ss.setdefault("q_start", 0.0)
     ss.setdefault("q_deadline", 0.0)
 
-    # Current question
     ss.setdefault("awaiting_answer", False)
     ss.setdefault("a", None)
     ss.setdefault("b", None)
 
-    # Counters
     ss.setdefault("total_questions", 0)
     ss.setdefault("correct_questions", 0)
     ss.setdefault("total_time_spent", 0.0)
 
-    # Tracking
     ss.setdefault("wrong_attempt_items", [])
     ss.setdefault("missed_items", [])
     ss.setdefault("wrong_twice", [])
     ss.setdefault("attempts_wrong", {})
     ss.setdefault("scheduled_repeats", [])
 
-    # Input / FX
     ss.setdefault("entry", "")
     ss.setdefault("needs_rerun", False)
     ss.setdefault("shake_until", 0.0)
@@ -230,7 +183,6 @@ def _init_state():
     ss.setdefault("pending_correct", False)
     ss.setdefault("last_kp_seq", -1)
 
-    # Webhook config (precedence: UI > env > secrets > default)
     env_hook = os.getenv("DISCORD_WEBHOOK")
     sec_hook = _secret_webhook()
     default_hook = DISCORD_WEBHOOK_DEFAULT
@@ -242,15 +194,10 @@ def _init_state():
         "default": _mask_webhook(default_hook)
     })
 
-    # Cookie init + write-gating flags
-    ss.setdefault("_cookie_loaded", False)
-    ss.setdefault("_cookie_tries", 0)
-    ss.setdefault("_pending_start", False)
-    ss.setdefault("_cookie_write_done", False)
-    ss.setdefault("_cookie_write_waits", 0)
-    ss.setdefault("_cookie_last_written", "")
-
 _init_state()
+
+# Prefill once per run from cookie (safe; no retries needed here)
+_cookies_read_apply()
 
 # ---------------- Keypad component (with fallback) ----------------
 KP_COMPONENT_AVAILABLE = False
@@ -260,12 +207,12 @@ def _register_keypad_component():
     try:
         comp_dir = Path(__file__).with_name("keypad_component")
         if comp_dir.exists() and (comp_dir / "index.html").exists():
-            keypad = declare_component("tt_keypad", path=str(comp_dir))  # returns "CODE|SEQ" or None
+            keypad = declare_component("tt_keypad", path=str(comp_dir))
             KP_COMPONENT_AVAILABLE = True
         else:
             KP_COMPONENT_AVAILABLE = False
             KP_LOAD_ERROR = f"Keypad component not found at: {comp_dir}/index.html"
-            def keypad(default=None, key=None):  # fallback signature
+            def keypad(default=None, key=None):
                 return None
     except Exception as e:
         KP_COMPONENT_AVAILABLE = False
@@ -276,7 +223,7 @@ def _register_keypad_component():
 _register_keypad_component()
 
 # ---------------- Core logic ----------------
-MULTIPLIERS = list(range(1, 13))  # 1..12
+MULTIPLIERS = list(range(1, 13))
 def _now() -> float: return time.monotonic()
 def _required_digits() -> int: return len(str(abs(st.session_state.a * st.session_state.b)))
 
@@ -400,7 +347,7 @@ def _end_session():
     ss.running = False
     ss.finished = True
     ss.awaiting_answer = False
-    _send_results_discord()  # auto-send
+    _send_results_discord()
     ss.screen = "results"
     ss.needs_rerun = True
 
@@ -410,7 +357,6 @@ def _record_question(correct: bool, timed_out: bool):
     ss.total_questions += 1
     ss.total_time_spent += duration
     item = (ss.a, ss.b)
-
     if correct:
         ss.correct_questions += 1
         ss.scheduled_repeats = [s for s in ss.scheduled_repeats if s["item"] != item]
@@ -428,7 +374,6 @@ def _record_question(correct: bool, timed_out: bool):
             if item not in ss.wrong_twice:
                 ss.wrong_twice.append(item)
             ss.scheduled_repeats = [s for s in ss.scheduled_repeats if s["item"] != item]
-
     ss.awaiting_answer = False
     _new_question()
     ss.needs_rerun = True
@@ -506,26 +451,19 @@ def screen_start():
     if KP_LOAD_ERROR:
         st.info(f"Keypad component: {KP_LOAD_ERROR}. Using fallback keypad.", icon="ℹ️")
 
-    # One-shot cookie prefill with safe retries (non-blocking)
-    _cookie_load_once_with_retries()
-
-    # Optional debug panel
+    # Debug panel
     if DEBUG:
-        with st.expander("Debug: cookie & state", expanded=False):
-            cm = _cookie_manager()
-            st.write("cookie_loaded:", st.session_state._cookie_loaded, "tries:", st.session_state._cookie_tries)
-            try:
-                st.write("cookie exists now:", bool(cm.get(COOKIE_KEY)))
-                st.write("cookie value preview:", (cm.get(COOKIE_KEY) or "")[:160])
-            except Exception as e:
-                st.write("cookie read error:", e)
-            st.write("pending_start:", st.session_state._pending_start,
-                     "write_done:", st.session_state._cookie_write_done,
-                     "write_waits:", st.session_state._cookie_write_waits)
-
+        with st.expander("Debug: cookies", expanded=False):
+            st.write("ready:", cookies.ready())
+            st.write("cookie exists now:", bool(cookies.get(COOKIE_SETTINGS_KEY)))
+            st.write("cookie value preview:", (cookies.get(COOKIE_SETTINGS_KEY) or "")[:160])
             if st.button("Delete settings cookie"):
-                try: cm.delete(COOKIE_KEY)
-                except Exception: pass
+                try:
+                    # Clear cookie and flush
+                    cookies.pop(COOKIE_SETTINGS_KEY, None)
+                    cookies.save()
+                except Exception:
+                    pass
                 st.rerun()
 
     # Start controls in a form
@@ -555,60 +493,28 @@ def screen_start():
             if not st.session_state.user or not st.session_state.user.strip():
                 st.error("Please enter a User name to continue.")
             else:
-                # Gate navigation: write cookie, confirm, then move
-                st.session_state._pending_start = True
-                st.session_state._cookie_write_done = False
-                st.session_state._cookie_write_waits = 0
-                st.session_state.needs_rerun = True
-
-    # Handle deferred cookie write/confirm → then navigate
-    if st.session_state._pending_start:
-        if not st.session_state._cookie_write_done:
-            _cookie_save_current_settings()
-            st.session_state._cookie_write_done = True
-            st.session_state.needs_rerun = True
-            st.info("Saving settings…")
-            return  # let the component process the set()
-        else:
-            if _cookie_confirm_written():
-                st.session_state._pending_start = False
-                st.session_state._cookie_write_done = False
-                _start_session(); st.rerun()
-            else:
-                st.session_state._cookie_write_waits += 1
-                if st.session_state._cookie_write_waits < COOKIE_WRITE_TRIES_MAX:
-                    st.session_state.needs_rerun = True
-                    st.info("Saving settings…")
-                    return
-                # Give up politely and continue
-                st.warning("Settings save not confirmed; continuing anyway.")
-                st.session_state._pending_start = False
-                st.session_state._cookie_write_done = False
+                _cookies_save_current_settings()
                 _start_session(); st.rerun()
 
 def screen_practice():
     now_ts = _now()
     _tick(now_ts)
 
-    # Top: per-question bar
     _q_bar(now_ts)
 
-    # Visual order
     prompt_area = st.container()
     answer_area = st.container()
     keypad_area = st.container()
 
-    # Render keypad FIRST (for event capture)
     with keypad_area:
         if KP_COMPONENT_AVAILABLE:
-            payload = keypad(default=None)  # "CODE|SEQ" or None
+            payload = keypad(default=None)
         else:
             payload = None
             render_fallback_keypad()
 
     _handle_keypad_payload(payload)
 
-    # Auto-submit when digits reached
     if st.session_state.awaiting_answer:
         target = st.session_state.a * st.session_state.b
         need = _required_digits()
@@ -643,7 +549,6 @@ def screen_practice():
         st.markdown(f"<div class='{' '.join(classes)}'>{st.session_state.entry or '&nbsp;'}</div>", unsafe_allow_html=True)
         st.caption(f"Auto-submit after {_required_digits()} digit{'s' if _required_digits()>1 else ''}")
 
-    # Bottom: session bar
     _s_bar(now_ts)
 
 def screen_results():
@@ -694,7 +599,6 @@ def _render():
 
     st.caption(f"Times Tables Trainer {APP_VERSION} — Keypad={'custom' if KP_COMPONENT_AVAILABLE else 'fallback'}")
 
-    # Heartbeat
     if st.session_state.needs_rerun:
         st.session_state.needs_rerun = False
         st.rerun()

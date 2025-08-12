@@ -1,24 +1,23 @@
 # times_tables_streamlit.py — mobile-first, 3 screens (Start → Practice → Results)
 # Numeric keypad (custom or fallback), auto-submit, first-press fix, spaced repetition
 # Discord webhook notifications (requests), streamlined UI
-# Remembers Start-screen settings per device using browser LocalStorage (robust load with retries)
-# Version: v1.12.1
+# Persist Start-screen settings per device using browser cookies (extra-streamlit-components)
+# Version: v1.13.0
 
 import os
-import math
 import time
 import json
 import random
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import requests  # uses certifi bundle for TLS
+import requests
 import streamlit as st
 from streamlit.components.v1 import declare_component
-from streamlit_local_storage import LocalStorage  # LocalStorage component
+import extra_streamlit_components as stx  # CookieManager
 
-APP_VERSION = "v1.12.1"
+APP_VERSION = "v1.13.0"
 
 # ---------------- Logging ----------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -45,7 +44,7 @@ def _secret_webhook() -> str | None:
     except Exception:
         return None
 
-# ---------------- Page config + global styles ----------------
+# ---------------- Page config + styles ----------------
 st.set_page_config(page_title="Times Tables Trainer", page_icon="✳️",
                    layout="centered", initial_sidebar_state="collapsed")
 
@@ -54,7 +53,7 @@ st.markdown("""
   /* Hide Streamlit chrome */
   div[data-testid="stToolbar"], div[data-testid="stDecoration"], header, footer, #MainMenu { display: none !important; }
 
-  /* Layout */
+  /* Layout + theme */
   .block-container{ max-width: 440px !important; padding: 8px 12px !important; }
   html, body { background:#0b1220; color:#f8fafc; }
 
@@ -69,7 +68,7 @@ st.markdown("""
   .tt-prompt h1 { font-size: clamp(48px, 15vw, 88px); line-height: 1; margin: 4px 0 0; text-align:center; }
   .answer-display{ font-size:2rem; font-weight:700; text-align:center; padding:.32rem .6rem; border:2px solid var(--slate-bd); border-radius:.6rem; background:var(--slate); color:#f8fafc; }
   .answer-display.ok{ background:var(--ok-bg); border:3px dashed var(--ok-bd); color:var(--ok-fg); }
-  .answer-display.bad{ background:var(--bad-bg); border:3px solid var(--bad-bd); color:var(--bad-fg); }
+  .answer-display.bad{ background:var(--bad-bg); border:3px solid var(--bad-bd); color:#7f1d1d; }
 
   .stButton>button[kind="primary"]{ background:var(--blue) !important; color:#0b1220 !important; border:none !important; font-weight:700; width:100%; min-height:48px; }
   .stButton>button{ min-height:44px; width:100%; }
@@ -95,7 +94,73 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------- Query params (not used for persistence now) ----------------
+# ---------------- Cookie persistence ----------------
+COOKIE_KEY = "ttt_settings_v1"
+COOKIE_TRIES_MAX = 8
+
+def _cookie_manager():
+    # Keep a single manager instance in state
+    cm = st.session_state.get("_cookie_mgr")
+    if cm is None:
+        cm = stx.CookieManager()
+        st.session_state._cookie_mgr = cm
+    return cm
+
+def _cookie_load_once_with_retries():
+    """Try several renders so the frontend component has time to initialise."""
+    ss = st.session_state
+    if ss.get("_cookie_loaded", False):
+        return
+    tries = ss.get("_cookie_tries", 0)
+
+    cm = _cookie_manager()
+    raw = None
+    try:
+        # Prefer key-specific read (faster than get_all on some builds)
+        raw = cm.get(COOKIE_KEY)
+    except Exception:
+        raw = None
+
+    if raw:
+        try:
+            data = json.loads(raw)
+            ss.user = str(data.get("user", ss.user))
+            ss.min_table = int(data.get("min_table", ss.min_table))
+            ss.max_table = int(data.get("max_table", ss.max_table))
+            ss.per_q = int(data.get("per_q", ss.per_q))
+            mins = int(data.get("minutes", (ss.total_seconds // 60)))
+            ss.total_seconds = max(0, mins) * 60
+        except Exception:
+            pass
+        ss._cookie_loaded = True
+        ss.needs_rerun = True
+        return
+
+    # Retry a few times; component often needs 1–2 renders
+    tries += 1
+    ss._cookie_tries = tries
+    if tries < COOKIE_TRIES_MAX:
+        ss.needs_rerun = True
+    else:
+        ss._cookie_loaded = True  # give up quietly
+
+def _cookie_save_current_settings():
+    ss = st.session_state
+    payload = json.dumps({
+        "user": ss.user,
+        "min_table": ss.min_table,
+        "max_table": ss.max_table,
+        "per_q": ss.per_q,
+        "minutes": ss.total_seconds // 60,
+    })
+    cm = _cookie_manager()
+    # Expire in ~1 year; SameSite=Lax; path="/"
+    try:
+        cm.set(COOKIE_KEY, payload, expires_at=(datetime.utcnow() + timedelta(days=365)))
+    except Exception as e:
+        logger.warning("Cookie set failed: %s", e)
+
+# ---------------- Query params (not used for persistence) ----------------
 def _get_qp():
     try:
         return dict(st.query_params)
@@ -103,11 +168,6 @@ def _get_qp():
         return {k: v for k, v in st.experimental_get_query_params().items()}
 
 _qp = _get_qp()
-
-# ---------------- LocalStorage manager ----------------
-LS = LocalStorage()
-LS_KEY = "ttt_settings_v1"
-LS_BIND_KEY = "ls_bound_value"  # session_state key where component can drop the value
 
 # ---------------- State ----------------
 def _init_state():
@@ -166,74 +226,11 @@ def _init_state():
         "default": _mask_webhook(default_hook)
     })
 
-    # LocalStorage load control (retry a few renders to wait for component readiness)
-    ss.setdefault("ls_loaded", False)
-    ss.setdefault("ls_tries", 0)  # how many times we've tried to fetch
+    # Cookie init flags
+    ss.setdefault("_cookie_loaded", False)
+    ss.setdefault("_cookie_tries", 0)
 
 _init_state()
-
-# ---------------- LocalStorage helpers ----------------
-def _apply_settings_dict(data: dict):
-    ss = st.session_state
-    try:
-        ss.user = str(data.get("user", ss.user))
-        ss.min_table = int(data.get("min_table", ss.min_table))
-        ss.max_table = int(data.get("max_table", ss.max_table))
-        ss.per_q = int(data.get("per_q", ss.per_q))
-        mins = int(data.get("minutes", (ss.total_seconds // 60)))
-        ss.total_seconds = max(0, mins) * 60
-    except Exception:
-        pass
-
-def _load_settings_from_localstorage():
-    """Retry for a few renders and also read from a bound session_state key set by the component."""
-    ss = st.session_state
-    if ss.ls_loaded:
-        return
-
-    ss.ls_tries += 1
-
-    # Trigger component read; if ready it may return a value OR populate session_state[LS_BIND_KEY]
-    val_direct = None
-    try:
-        val_direct = LS.getItem(LS_KEY, key=LS_BIND_KEY)  # binds into session_state[LS_BIND_KEY]
-    except Exception:
-        val_direct = None
-
-    # Prefer bound value (arrives on subsequent render), fallback to direct return
-    raw = st.session_state.get(LS_BIND_KEY) or val_direct
-
-    if raw:
-        try:
-            data = json.loads(raw)
-            _apply_settings_dict(data)
-        except Exception:
-            pass
-        ss.ls_loaded = True
-        ss.needs_rerun = True
-        return
-
-    # Nothing yet; allow a few retries (component usually becomes ready after 1–2 renders)
-    if ss.ls_tries < 6:
-        ss.needs_rerun = True  # schedule a rerun
-        return
-
-    # Give up quietly after retries; user will see defaults
-    ss.ls_loaded = True
-
-def _save_settings_to_localstorage():
-    ss = st.session_state
-    payload = {
-        "user": ss.user,
-        "min_table": ss.min_table,
-        "max_table": ss.max_table,
-        "per_q": ss.per_q,
-        "minutes": ss.total_seconds // 60,
-    }
-    try:
-        LS.setItem(LS_KEY, json.dumps(payload))
-    except Exception as e:
-        logger.warning("LocalStorage set failed: %s", e)
 
 # ---------------- Keypad component (with fallback) ----------------
 KP_COMPONENT_AVAILABLE = False
@@ -248,7 +245,7 @@ def _register_keypad_component():
         else:
             KP_COMPONENT_AVAILABLE = False
             KP_LOAD_ERROR = f"Keypad component not found at: {comp_dir}/index.html"
-            def keypad(default=None, key=None):
+            def keypad(default=None, key=None):  # fallback signature
                 return None
     except Exception as e:
         KP_COMPONENT_AVAILABLE = False
@@ -258,7 +255,7 @@ def _register_keypad_component():
 
 _register_keypad_component()
 
-# ---------------- Logic helpers ----------------
+# ---------------- Core logic ----------------
 MULTIPLIERS = list(range(1, 13))  # 1..12
 def _now() -> float: return time.monotonic()
 def _required_digits() -> int: return len(str(abs(st.session_state.a * st.session_state.b)))
@@ -332,7 +329,6 @@ def _get_webhook_url() -> str:
     return eff
 
 def _send_results_discord(text: str | None = None):
-    """POST to Discord webhook with requests (uses certifi bundle)."""
     url = _get_webhook_url()
     ss = st.session_state
     content = (text or _build_results_text()).strip()
@@ -453,7 +449,7 @@ def _handle_keypad_payload(payload):
         st.session_state.last_kp_seq = (last + 1) if (seq is None) else seq
         _kp_apply(code)
 
-# ---------- Timer bars ----------
+# ---------- Bars ----------
 def _q_bar(now_ts: float):
     ss = st.session_state
     q_total = max(1e-6, float(ss.per_q))
@@ -490,8 +486,8 @@ def screen_start():
     if KP_LOAD_ERROR:
         st.info(f"Keypad component: {KP_LOAD_ERROR}. Using fallback keypad.", icon="ℹ️")
 
-    # Non-blocking LocalStorage prefill with retries
-    _load_settings_from_localstorage()
+    # One-shot cookie prefill with safe retries (non-blocking)
+    _cookie_load_once_with_retries()
 
     # Start controls in a form
     with st.form("start_form", clear_on_submit=False):
@@ -502,7 +498,7 @@ def screen_start():
                 st.session_state.user,
                 max_chars=32,
                 placeholder="Name or ID",
-                help="Saved on this device once you start."
+                help="Saved on this device."
             )
             st.session_state.min_table = int(st.number_input("Min table", 1, 12, value=st.session_state.min_table, step=1))
         with c2:
@@ -515,7 +511,7 @@ def screen_start():
         if st.session_state.min_table > st.session_state.max_table:
             st.session_state.min_table, st.session_state.max_table = st.session_state.max_table, st.session_state.min_table
 
-        # --- Advanced (kept for later; commented out) ---
+        # Advanced panel kept commented out
         # if False:
         #     with st.expander("Advanced"):
         #         st.session_state.webhook_url = st.text_input(
@@ -527,34 +523,28 @@ def screen_start():
         #                    f"ENV: {st.session_state.webhook_sources.get('env','')} | "
         #                    f"SECRETS: {st.session_state.webhook_sources.get('secrets','')} | "
         #                    f"DEFAULT: {st.session_state.webhook_sources.get('default','')}")
-        #         test_clicked = st.form_submit_button("Send test message to Discord", use_container_width=True)
-        #         if test_clicked:
-        #             _send_results_discord(text=f"**Test** — Times Tables Trainer {APP_VERSION} ping at {datetime.utcnow().isoformat()}Z")
-        #         if st.session_state.last_webhook:
-        #             st.markdown("**Last webhook attempt**")
-        #             st.json(st.session_state.last_webhook)
 
         start_clicked = st.form_submit_button("Start", type="primary", use_container_width=True)
         if start_clicked:
             if not st.session_state.user or not st.session_state.user.strip():
                 st.error("Please enter a User name to continue.")
             else:
-                _save_settings_to_localstorage()
+                _cookie_save_current_settings()
                 _start_session(); st.rerun()
 
 def screen_practice():
     now_ts = _now()
     _tick(now_ts)
 
-    # Top: per-question bar (full-width)
+    # Top: per-question bar
     _q_bar(now_ts)
 
-    # Main content in visual order
-    prompt_area = st.container()   # 1) multiplication prompt
-    answer_area = st.container()   # 2) answer field + caption
-    keypad_area = st.container()   # 3) keypad
+    # Visual order
+    prompt_area = st.container()
+    answer_area = st.container()
+    keypad_area = st.container()
 
-    # Render keypad FIRST (to capture events), into the 3rd placeholder
+    # Render keypad FIRST (for event capture)
     with keypad_area:
         if KP_COMPONENT_AVAILABLE:
             payload = keypad(default=None)  # "CODE|SEQ" or None
@@ -562,10 +552,9 @@ def screen_practice():
             payload = None
             render_fallback_keypad()
 
-    # Apply keypad event
     _handle_keypad_payload(payload)
 
-    # Auto-submit on expected digits
+    # Auto-submit when digits reached
     if st.session_state.awaiting_answer:
         target = st.session_state.a * st.session_state.b
         need = _required_digits()
@@ -586,16 +575,13 @@ def screen_practice():
                         st.session_state.wrong_attempt_items.append((st.session_state.a, st.session_state.b))
                     st.session_state.shake_until = now_ts + 0.45
 
-    # Finalise correct after flash
     if st.session_state.pending_correct and now_ts >= st.session_state.ok_until:
         st.session_state.pending_correct = False
         _record_question(True, False)
 
-    # 1) Prompt
     with prompt_area:
         st.markdown(f"<div class='tt-prompt'><h1>{st.session_state.a} × {st.session_state.b}</h1></div>", unsafe_allow_html=True)
 
-    # 2) Answer field
     with answer_area:
         classes = ["answer-display"]
         if st.session_state.pending_correct and now_ts < st.session_state.ok_until: classes.append("ok")
@@ -603,7 +589,7 @@ def screen_practice():
         st.markdown(f"<div class='{' '.join(classes)}'>{st.session_state.entry or '&nbsp;'}</div>", unsafe_allow_html=True)
         st.caption(f"Auto-submit after {_required_digits()} digit{'s' if _required_digits()>1 else ''}")
 
-    # Bottom: session bar (full-width)
+    # Bottom: session bar
     _s_bar(now_ts)
 
 def screen_results():
@@ -615,10 +601,8 @@ def screen_results():
 
     st.write("### Results")
 
-    # Hero percentage
     st.markdown(f"<div class='hero'><div class='pct'>{pct}%</div><div class='lab' style='color:var(--muted)'>Correct</div></div>", unsafe_allow_html=True)
 
-    # Dashboard cards
     st.markdown("<div class='dash'>", unsafe_allow_html=True)
     st.markdown(f"<div class='card'><div class='lab'>Questions</div><div class='val'>{total}</div></div>", unsafe_allow_html=True)
     st.markdown(f"<div class='card'><div class='lab'>Avg time</div><div class='val'>{avg:0.2f} s</div></div>", unsafe_allow_html=True)
@@ -626,7 +610,6 @@ def screen_results():
     st.markdown(f"<div class='card'><div class='lab'>Correct</div><div class='val'>{correct}</div></div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # Items to revisit
     wrong_any = sorted(list(set(st.session_state.wrong_attempt_items)))
     st.markdown("#### Items to revisit")
     if wrong_any:
@@ -638,7 +621,6 @@ def screen_results():
     else:
         st.write("None.")
 
-    # Single action: Start Over
     if st.button("Start Over", type="primary", use_container_width=True):
         st.session_state.screen = "start"; st.rerun()
 
@@ -658,7 +640,7 @@ def _render():
 
     st.caption(f"Times Tables Trainer {APP_VERSION} — Keypad={'custom' if KP_COMPONENT_AVAILABLE else 'fallback'}")
 
-    # Heartbeat (progress timers / flashes without user input)
+    # Heartbeat
     if st.session_state.needs_rerun:
         st.session_state.needs_rerun = False
         st.rerun()

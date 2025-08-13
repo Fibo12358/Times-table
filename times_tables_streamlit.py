@@ -2,7 +2,7 @@
 # Features: Numeric keypad (custom or fallback), auto-submit, spaced repetition,
 # Discord webhook, cookies (settings, history, streak, revisit), adaptive timing,
 # URL-parameter bootstrap for initial settings, Assign page with sharable link + QR.
-# Version: v1.26.0
+# Version: v1.27.0
 
 import os
 import time
@@ -21,7 +21,7 @@ import altair as alt
 from streamlit.components.v1 import declare_component, html as st_html
 from streamlit_cookies_manager import EncryptedCookieManager  # robust cookies
 
-APP_VERSION = "v1.26.0"
+APP_VERSION = "v1.27.0"
 DEFAULT_BASE_URL = "https://times-tables-from-chalkface.streamlit.app/"
 
 # Note on st.cache deprecation: this script does NOT use st.cache.
@@ -53,7 +53,6 @@ def _secret_webhook() -> str | None:
         return None
 
 def _public_base_url() -> str | None:
-    # Safe: never crash if secrets.toml is missing locally
     try:
         v = st.secrets.get("public_base_url")
         if v: return str(v)
@@ -66,7 +65,7 @@ def _public_base_url() -> str | None:
         pass
     return None
 
-# ---------------- Page config + light CSS ----------------
+# ---------------- Page config + compact CSS ----------------
 st.set_page_config(page_title="Times Tables Trainer", page_icon="✳️",
                    layout="centered", initial_sidebar_state="collapsed")
 
@@ -93,7 +92,11 @@ if not DEBUG:
 
 st.markdown("""
 <style>
-  .block-container{ max-width: 480px !important; padding: 8px 12px !important; }
+  /* Tighter global layout */
+  .block-container{ max-width: 480px !important; padding: 4px 8px !important; }
+  [data-testid="stVerticalBlock"]{ gap: 6px !important; } /* compact vertical gaps */
+  .element-container{ padding-top: 0.1rem !important; padding-bottom: 0.1rem !important; }
+
   :root{
     --muted:#64748b; --blue:#2563eb; --blue2:#60a5fa;
     --ok-bg:#ecfdf5; --ok-bd:#16a34a; --ok-fg:#065f46;
@@ -101,23 +104,33 @@ st.markdown("""
     --slate-bd:#cbd5e1;
     --amber:#f59e0b; --amber2:#fbbf24;
   }
-  .tt-prompt h1 { font-size: clamp(48px, 15vw, 88px); line-height: 1; margin: 4px 0 6px; text-align:center; }
-  .answer-display{ font-size:2rem; font-weight:700; text-align:center; padding:.36rem .6rem; border:2px solid var(--slate-bd); border-radius:.6rem; background:#ffffff; }
+
+  /* Tiny titlebar for Start */
+  .tt-title{ font-weight:700; font-size:1rem; margin:2px 0 2px; color:#334155; }
+
+  /* Practice prompt + answer — compact on small screens */
+  .tt-prompt h1 { font-size: clamp(40px, 15vw, 80px); line-height: 1; margin: 0px 0 4px; text-align:center; }
+  @media (max-width: 420px){ .tt-prompt h1{ font-size: clamp(36px, 14vw, 64px); } }
+  .answer-display{ font-size:1.6rem; font-weight:700; text-align:center; padding:.28rem .5rem; border:2px solid var(--slate-bd); border-radius:.6rem; background:#ffffff; margin:2px 0 4px; }
   .answer-display.ok{ background:var(--ok-bg); border:3px dashed var(--ok-bd); color:var(--ok-fg); }
   .answer-display.bad{ background:var(--bad-bg); border:3px solid var(--bad-bd); color:var(--bad-fg); }
-  .stButton>button[kind="primary"]{ background:var(--blue) !important; color:#ffffff !important; border:none !important; font-weight:700; width:100%; min-height:48px; }
-  .stButton>button{ min-height:44px; width:100%; }
-  @keyframes shake{10%,90%{transform:translateX(-1px);}20%,80%{transform:translateX(2px);}30%,50%,70%{transform:translateX(-4px);}40%,60%{transform:translateX(4px);} }
-  .shake{ animation:shake .4s linear both; }
-  .barwrap{ background:#e5e7eb; border:1px solid #cbd5e1; border-radius:10px; height:12px; overflow:hidden; }
-  .barlabel{ display:flex; justify-content:space-between; font-size:.86rem; color:var(--muted); margin:6px 2px 6px; }
+
+  /* Buttons — slightly shorter */
+  .stButton>button[kind="primary"]{ background:var(--blue) !important; color:#ffffff !important; border:none !important; font-weight:700; width:100%; min-height:44px; }
+  .stButton>button{ min-height:40px; width:100%; }
+
+  /* Bars — slimmer + minimal labels */
+  .barwrap{ background:#e5e7eb; border:1px solid #cbd5e1; border-radius:10px; height:8px; overflow:hidden; }
+  .barlabel{ display:flex; justify-content:space-between; font-size:.78rem; color:var(--muted); margin:2px 2px 2px; }
   .barfill-q{ background:linear-gradient(90deg, var(--amber), var(--amber2)); height:100%; width:0%; transition:width .12s linear; }
   .barfill-s{ background:linear-gradient(90deg, var(--blue), var(--blue2)); height:100%; width:0%; transition:width .12s linear; }
+
   /* Results compaction */
-  .compact-metrics .stMetric { padding: 0.25rem 0.25rem !important; }
-  .compact-metrics [data-testid="stMetricLabel"] { font-size: 0.85rem !important; }
-  .compact-metrics [data-testid="stMetricValue"] { font-size: 1.1rem !important; }
-  .compact-metrics [data-testid="stMetricDelta"] { font-size: 0.8rem !important; }
+  .compact-metrics .stMetric { padding: 0.1rem 0.1rem !important; }
+  .compact-metrics [data-testid="stMetricLabel"] { font-size: 0.78rem !important; }
+  .compact-metrics [data-testid="stMetricValue"] { font-size: 1.05rem !important; }
+  .compact-metrics [data-testid="stMetricDelta"] { font-size: 0.75rem !important; }
+  .mini-caption{ font-size: 0.78rem; color: var(--muted); margin-top: -6px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -410,8 +423,6 @@ _register_keypad_component()
 
 # ---------------- Core logic ----------------
 MULTIPLIERS = list(range(1, 13))  # multipliers stay 1..12; "table" (a) may exceed 12
-FAST_FRAC = 1.0/3.0
-SLOW_FRAC = 2.0/3.0
 MIN_PER_Q = 2
 MAX_PER_Q = 60
 
@@ -609,7 +620,7 @@ def _handle_keypad_payload(payload):
         st.session_state.last_kp_seq = (last + 1) if (seq is None) else seq
         _kp_apply(code)
 
-# ---------- Bars ----------
+# ---------- Bars (compact) ----------
 def _q_bar(now_ts: float):
     ss = st.session_state
     q_total = max(1e-6, float(ss.per_q))
@@ -708,8 +719,8 @@ def _apply_assign_qp_and_persist():
 
 # ---------------- Screens ----------------
 def screen_start():
-    # Title update
-    st.write("### Practice Times Tables")
+    # Tiny title (reduces top whitespace)
+    st.markdown("<div class='tt-title'>Practice Times Tables</div>", unsafe_allow_html=True)
     if KP_LOAD_ERROR: st.info(f"Keypad component: {KP_LOAD_ERROR}. Using fallback keypad.", icon="ℹ️")
     if DEBUG: _debug_cookies_expander()
 
@@ -763,15 +774,16 @@ def render_fallback_keypad():
                 cols[c].button("Back", key=key, use_container_width=True, on_click=_kp_apply, args=("B",))
 
 def screen_practice():
-    # Ensure only practice UI appears (no config fields)
     now_ts = _now()
     _tick(now_ts)  # may end the session
 
     if not st.session_state.running and st.session_state.finished and st.session_state.screen != "results":
         st.session_state.screen = "results"; st.rerun(); return
 
+    # Compact top bar
     _q_bar(now_ts)
 
+    # Prompt / answer / keypad packed closely
     prompt_area = st.container(); answer_area = st.container(); keypad_area = st.container()
 
     with keypad_area:
@@ -815,8 +827,9 @@ def screen_practice():
         if st.session_state.pending_correct and now_ts < st.session_state.ok_until: classes.append("ok")
         elif now_ts < st.session_state.shake_until: classes += ["bad","shake"]
         st.markdown(f"<div class='{' '.join(classes)}'>{st.session_state.entry or '&nbsp;'}</div>", unsafe_allow_html=True)
-        st.caption(f"Auto-submit after {_required_digits()} digit{'s' if _required_digits()>1 else ''}")
+        # Removed the extra "auto-submit" caption to save vertical space
 
+    # Session bar at the bottom, compact
     _s_bar(now_ts)
 
     if st.session_state.running and _now() >= st.session_state.deadline:
@@ -829,64 +842,62 @@ def screen_results():
     pct = int(round((100.0 * correct / total), 0)) if total else 0
     time_spent = ss.total_time_spent; streak = ss.streak_count
 
-    # Compact metrics to minimise scrolling on phones
-    with st.container():
-        st.markdown("<div class='compact-metrics'>", unsafe_allow_html=True)
-        c1, c2 = st.columns(2)
-        with c1:
-            st.metric("Correct", f"{correct}/{total}", f"{pct}%")
-            st.metric("Avg time / Q", f"{avg:0.2f} s")
-        with c2:
-            st.metric("Time spent", f"{time_spent:0.0f} s")
-            st.metric("Streak", f"{streak} day{'s' if streak != 1 else ''}")
-        st.markdown("</div>", unsafe_allow_html=True)
+    # Compact 2×2 metric grid (no big headers)
+    st.markdown("<div class='compact-metrics'>", unsafe_allow_html=True)
+    r1c1, r1c2 = st.columns(2, gap="small")
+    with r1c1:
+        st.metric("Correct", f"{correct}/{total}", f"{pct}%")
+    with r1c2:
+        st.metric("Avg time / Q", f"{avg:0.2f} s")
+    r2c1, r2c2 = st.columns(2, gap="small")
+    with r2c1:
+        st.metric("Time spent", f"{time_spent:0.0f} s")
+    with r2c2:
+        st.metric("Streak", f"{streak} day{'s' if streak != 1 else ''}")
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.caption(f"Per-question time now: {ss.per_q}s")
+    # Per-Q now (tiny)
+    st.markdown(f"<div class='mini-caption'>Per-question time now: {ss.per_q}s</div>", unsafe_allow_html=True)
 
-    # Carried / revisit lists (kept short)
-    carried = ss.revisit_loaded
-    st.write("Carried over: " + (", ".join(f"{a}×{b}" for (a, b) in carried) if carried else "None."))
-    wrong_any = sorted(list(set(ss.wrong_attempt_items)))
-    st.write("To revisit: " + (", ".join(
-        f"{a}×{b}{' (×2)' if (a, b) in ss.wrong_twice else ''}" for a, b in wrong_any
-    ) or "None."))
-
-    # Side-by-side compact charts (no section header; captions act as legends)
+    # Side-by-side mini charts with tiny captions (serve as legends)
     df = _history_for_last_10_days()
     if not df.empty:
         c_left, c_right = st.columns(2, gap="small")
-
-        # Score chart
         with c_left:
             ch1 = (
                 alt.Chart(df)
                 .mark_line(point=True)
                 .encode(
-                    x=alt.X("label:N", axis=alt.Axis(title=None, labelAngle=0)),
-                    y=alt.Y("pct:Q", axis=alt.Axis(title=None)),
-                    tooltip=[alt.Tooltip("label:N", title="Day"), alt.Tooltip("pct:Q", title="Score (%)")]
+                    x=alt.X("label:N", axis=alt.Axis(title=None, labelAngle=0, labelFontSize=9)),
+                    y=alt.Y("pct:Q", axis=alt.Axis(title=None, labelFontSize=9)),
                 )
-                .properties(height=110)
+                .properties(height=80)
             )
             st.altair_chart(ch1, use_container_width=True)
-            st.caption("Score")
-
-        # Avg time per Q
+            st.markdown("<div class='mini-caption'>Score</div>", unsafe_allow_html=True)
         with c_right:
             ch2 = (
                 alt.Chart(df)
                 .mark_line(point=True, color="#2563eb")
                 .encode(
-                    x=alt.X("label:N", axis=alt.Axis(title=None, labelAngle=0)),
-                    y=alt.Y("avg:Q", axis=alt.Axis(title=None)),
-                    tooltip=[alt.Tooltip("label:N", title="Day"), alt.Tooltip("avg:Q", title="Av. time (s)")]
+                    x=alt.X("label:N", axis=alt.Axis(title=None, labelAngle=0, labelFontSize=9)),
+                    y=alt.Y("avg:Q", axis=alt.Axis(title=None, labelFontSize=9)),
                 )
-                .properties(height=110)
+                .properties(height=80)
             )
             st.altair_chart(ch2, use_container_width=True)
-            st.caption("Av. time/question")
+            st.markdown("<div class='mini-caption'>Av. time/question</div>", unsafe_allow_html=True)
     else:
-        st.caption("No recent history yet — complete a few sessions to see your progress.")
+        st.markdown("<div class='mini-caption'>No recent history yet — complete a few sessions to see your progress.</div>", unsafe_allow_html=True)
+
+    # Move long lists into a collapsible section to keep page above the fold
+    with st.expander("More details", expanded=False):
+        carried = ss.revisit_loaded
+        st.write("Carried over: " + (", ".join(f\"{a}×{b}\" for (a,b) in carried) if carried else "None."))
+        wrong_any = sorted(list(set(ss.wrong_attempt_items)))
+        st.write("To revisit: " + (", ".join(
+            f\"{a}×{b}{' (×2)' if (a, b) in ss.wrong_twice else ''}\" for a, b in wrong_any
+        ) or "None."))
 
     if DEBUG:
         _debug_cookies_expander("Debug: cookies (Results)")
@@ -983,17 +994,16 @@ def _render():
     except Exception as e:
         st.error("Unhandled exception while rendering."); st.exception(e)
 
-    # Footer:
+    # Footer (kept small so it stays above fold)
     if st.session_state.screen == "start":
         # Text link 'Assign' that reflects CURRENT visible values (no button)
         assign_qs = urlencode(_current_params_from_state())
-        st.caption(f"Times Tables Trainer {APP_VERSION} from The Chalkface Project. "
-                   f"[Assign](?{assign_qs})")
+        st.markdown(f"<div class='mini-caption'>Times Tables Trainer {APP_VERSION} from The Chalkface Project. "
+                    f"<a href='?{assign_qs}'>Assign</a></div>", unsafe_allow_html=True)
     elif st.session_state.screen == "practice":
-        # No Assign control here
-        st.caption(f"Times Tables Trainer {APP_VERSION} from The Chalkface Project — per-Q: {int(st.session_state.per_q)}s")
+        st.markdown(f"<div class='mini-caption'>Times Tables Trainer {APP_VERSION} — per-Q: {int(st.session_state.per_q)}s</div>", unsafe_allow_html=True)
     else:
-        st.caption(f"Times Tables Trainer {APP_VERSION} from The Chalkface Project")
+        st.markdown(f"<div class='mini-caption'>Times Tables Trainer {APP_VERSION} from The Chalkface Project</div>", unsafe_allow_html=True)
 
     if st.session_state.needs_rerun:
         st.session_state.needs_rerun = False; st.rerun()

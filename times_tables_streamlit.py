@@ -2,7 +2,7 @@
 # Features: Numeric keypad (custom or fallback), auto-submit, spaced repetition,
 # Discord webhook, cookies (settings, history, streak, revisit), adaptive timing,
 # URL-parameter bootstrap for initial settings, Assign page with sharable link + QR.
-# Version: v1.27.0
+# Version: v1.27.1
 
 import os
 import time
@@ -21,7 +21,7 @@ import altair as alt
 from streamlit.components.v1 import declare_component, html as st_html
 from streamlit_cookies_manager import EncryptedCookieManager  # robust cookies
 
-APP_VERSION = "v1.27.0"
+APP_VERSION = "v1.27.1"
 DEFAULT_BASE_URL = "https://times-tables-from-chalkface.streamlit.app/"
 
 # Note on st.cache deprecation: this script does NOT use st.cache.
@@ -893,10 +893,10 @@ def screen_results():
     # Move long lists into a collapsible section to keep page above the fold
     with st.expander("More details", expanded=False):
         carried = ss.revisit_loaded
-        st.write("Carried over: " + (", ".join(f\"{a}×{b}\" for (a,b) in carried) if carried else "None."))
+        st.write("Carried over: " + (", ".join(f"{a}×{b}" for (a, b) in carried) if carried else "None."))
         wrong_any = sorted(list(set(ss.wrong_attempt_items)))
         st.write("To revisit: " + (", ".join(
-            f\"{a}×{b}{' (×2)' if (a, b) in ss.wrong_twice else ''}\" for a, b in wrong_any
+            f"{a}×{b}{' (×2)' if (a, b) in ss.wrong_twice else ''}" for a, b in wrong_any
         ) or "None."))
 
     if DEBUG:

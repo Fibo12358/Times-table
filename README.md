@@ -1,6 +1,6 @@
 # Times Tables Trainer (Streamlit)
 
-A calm, keypad-first trainer for multiplication tables:
+A calm, mobile-first trainer for multiplication tables:
 - Randomised questions, with min/max tables.
 - Per-question timer bar (top) and session timer bar (bottom).
 - On-screen keypad; auto-submit when the answer reaches the right number of digits.

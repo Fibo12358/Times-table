@@ -2,7 +2,7 @@
 # Features: Numeric keypad (custom or fallback), auto-submit, spaced repetition,
 # Discord webhook, cookies (settings, history, streak, revisit), adaptive timing,
 # URL-parameter bootstrap for initial settings, Assign page with sharable link + QR.
-# Version: v1.27.1
+# Version: v1.28.0
 
 import os
 import time
@@ -21,7 +21,7 @@ import altair as alt
 from streamlit.components.v1 import declare_component, html as st_html
 from streamlit_cookies_manager import EncryptedCookieManager  # robust cookies
 
-APP_VERSION = "v1.27.1"
+APP_VERSION = "v1.28.0"
 DEFAULT_BASE_URL = "https://times-tables-from-chalkface.streamlit.app/"
 
 # Note on st.cache deprecation: this script does NOT use st.cache.
@@ -125,12 +125,18 @@ st.markdown("""
   .barfill-q{ background:linear-gradient(90deg, var(--amber), var(--amber2)); height:100%; width:0%; transition:width .12s linear; }
   .barfill-s{ background:linear-gradient(90deg, var(--blue), var(--blue2)); height:100%; width:0%; transition:width .12s linear; }
 
-  /* Results compaction */
+  /* Results compaction + KPI badge strip */
   .compact-metrics .stMetric { padding: 0.1rem 0.1rem !important; }
   .compact-metrics [data-testid="stMetricLabel"] { font-size: 0.78rem !important; }
   .compact-metrics [data-testid="stMetricValue"] { font-size: 1.05rem !important; }
   .compact-metrics [data-testid="stMetricDelta"] { font-size: 0.75rem !important; }
   .mini-caption{ font-size: 0.78rem; color: var(--muted); margin-top: -6px; }
+
+  .kpi-strip{display:flex;flex-wrap:wrap;gap:8px;row-gap:4px;align-items:center;
+             justify-content:space-between;font-size:.95rem;margin:2px 0 2px;}
+  .kpi-pill{background:#eef2ff;border:1px solid #c7d2fe;border-radius:999px;
+            padding:2px 8px;line-height:1.1;white-space:nowrap;}
+  @media (max-width:420px){.kpi-strip{gap:6px;font-size:.9rem}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -842,19 +848,16 @@ def screen_results():
     pct = int(round((100.0 * correct / total), 0)) if total else 0
     time_spent = ss.total_time_spent; streak = ss.streak_count
 
-    # Compact 2×2 metric grid (no big headers)
-    st.markdown("<div class='compact-metrics'>", unsafe_allow_html=True)
-    r1c1, r1c2 = st.columns(2, gap="small")
-    with r1c1:
-        st.metric("Correct", f"{correct}/{total}", f"{pct}%")
-    with r1c2:
-        st.metric("Avg time / Q", f"{avg:0.2f} s")
-    r2c1, r2c2 = st.columns(2, gap="small")
-    with r2c1:
-        st.metric("Time spent", f"{time_spent:0.0f} s")
-    with r2c2:
-        st.metric("Streak", f"{streak} day{'s' if streak != 1 else ''}")
-    st.markdown("</div>", unsafe_allow_html=True)
+    # KPI badge strip (compact, wraps to at most 2 lines on small phones)
+    st.markdown(
+        f"<div class='kpi-strip'>"
+        f"<span class='kpi-pill'>✅ {correct}/{total}</span>"
+        f"<span class='kpi-pill'>⏱ {avg:.2f}s/Q</span>"
+        f"<span class='kpi-pill'>🕒 {time_spent:.0f}s</span>"
+        f"<span class='kpi-pill'>🔥 {streak}d</span>"
+        f"</div>",
+        unsafe_allow_html=True
+    )
 
     # Per-Q now (tiny)
     st.markdown(f"<div class='mini-caption'>Per-question time now: {ss.per_q}s</div>", unsafe_allow_html=True)

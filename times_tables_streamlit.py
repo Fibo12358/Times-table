@@ -2,7 +2,7 @@
 # Features: Numeric keypad (custom or fallback), auto-submit, spaced repetition,
 # Discord webhook, cookies (settings, history, streak, revisit), adaptive timing,
 # URL-parameter bootstrap for initial settings, Assign page with sharable link + QR.
-# Version: v1.28.0
+# Version: v1.29.0
 
 import os
 import time
@@ -21,7 +21,7 @@ import altair as alt
 from streamlit.components.v1 import declare_component, html as st_html
 from streamlit_cookies_manager import EncryptedCookieManager  # robust cookies
 
-APP_VERSION = "v1.28.0"
+APP_VERSION = "v1.29.0"
 DEFAULT_BASE_URL = "https://times-tables-from-chalkface.streamlit.app/"
 
 # Note on st.cache deprecation: this script does NOT use st.cache.
@@ -120,23 +120,22 @@ st.markdown("""
   .stButton>button{ min-height:40px; width:100%; }
 
   /* Bars — slimmer + minimal labels */
-  .barwrap{ background:#e5e7eb; border:1px solid #cbd5e1; border-radius:10px; height:8px; overflow:hidden; }
+  .barwrap{ background:#e5e7eb; border:1px solid #cbd5e1; border-radius:10px; height:6px; overflow:hidden; }
   .barlabel{ display:flex; justify-content:space-between; font-size:.78rem; color:var(--muted); margin:2px 2px 2px; }
   .barfill-q{ background:linear-gradient(90deg, var(--amber), var(--amber2)); height:100%; width:0%; transition:width .12s linear; }
   .barfill-s{ background:linear-gradient(90deg, var(--blue), var(--blue2)); height:100%; width:0%; transition:width .12s linear; }
 
-  /* Results compaction + KPI badge strip */
-  .compact-metrics .stMetric { padding: 0.1rem 0.1rem !important; }
-  .compact-metrics [data-testid="stMetricLabel"] { font-size: 0.78rem !important; }
-  .compact-metrics [data-testid="stMetricValue"] { font-size: 1.05rem !important; }
-  .compact-metrics [data-testid="stMetricDelta"] { font-size: 0.75rem !important; }
-  .mini-caption{ font-size: 0.78rem; color: var(--muted); margin-top: -6px; }
+  /* Sticky session bar at bottom for Practice */
+  .sticky-bottom{ position: sticky; bottom: 0; background: #ffffff; padding-top: 4px; padding-bottom: 2px; z-index: 2; }
 
-  .kpi-strip{display:flex;flex-wrap:wrap;gap:8px;row-gap:4px;align-items:center;
-             justify-content:space-between;font-size:.95rem;margin:2px 0 2px;}
-  .kpi-pill{background:#eef2ff;border:1px solid #c7d2fe;border-radius:999px;
-            padding:2px 8px;line-height:1.1;white-space:nowrap;}
-  @media (max-width:420px){.kpi-strip{gap:6px;font-size:.9rem}}
+  /* Results — CSS Grid tiles (2×2, never collapses to 1×4) */
+  .kpi-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin:4px 0;}
+  .kpi{border:1px solid #cbd5e1;border-radius:8px;padding:6px 8px;background:#fff}
+  .kpi .v{font-weight:700;font-size:1.05rem;line-height:1}
+  .kpi .l{font-size:.78rem;color:#64748b;margin-top:2px}
+  @media (max-width:360px){.kpi .v{font-size:1rem}}
+
+  .mini-caption{ font-size: 0.78rem; color: var(--muted); margin-top: -6px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -640,8 +639,13 @@ def _s_bar(now_ts: float):
     s_total = max(1e-6, float(ss.total_seconds))
     s_left = max(0.0, (ss.deadline - now_ts) if ss.running else 0.0)
     s_pct = max(0.0, min(100.0, 100.0 * s_left / s_total))
-    st.markdown("<div class='barlabel'><span>Session</span></div>", unsafe_allow_html=True)
-    st.markdown(f"<div class='barwrap'><div class='barfill-s' style='width:{s_pct:.0f}%'></div></div>", unsafe_allow_html=True)
+    # sticky wrapper keeps the session bar visible above the fold
+    st.markdown(f"""
+<div class='sticky-bottom'>
+  <div class='barlabel'><span>Session</span></div>
+  <div class='barwrap'><div class='barfill-s' style='width:{s_pct:.0f}%'></div></div>
+</div>
+""", unsafe_allow_html=True)
 
 # ---------- Debug expander ----------
 def _debug_cookies_expander(title="Debug: cookies"):
@@ -833,9 +837,8 @@ def screen_practice():
         if st.session_state.pending_correct and now_ts < st.session_state.ok_until: classes.append("ok")
         elif now_ts < st.session_state.shake_until: classes += ["bad","shake"]
         st.markdown(f"<div class='{' '.join(classes)}'>{st.session_state.entry or '&nbsp;'}</div>", unsafe_allow_html=True)
-        # Removed the extra "auto-submit" caption to save vertical space
 
-    # Session bar at the bottom, compact
+    # Sticky Session bar at the very bottom, compact
     _s_bar(now_ts)
 
     if st.session_state.running and _now() >= st.session_state.deadline:
@@ -848,15 +851,17 @@ def screen_results():
     pct = int(round((100.0 * correct / total), 0)) if total else 0
     time_spent = ss.total_time_spent; streak = ss.streak_count
 
-    # KPI badge strip (compact, wraps to at most 2 lines on small phones)
+    # 2×2 CSS Grid KPI tiles (labels under values, compact, never stacks to 1×4)
     st.markdown(
-        f"<div class='kpi-strip'>"
-        f"<span class='kpi-pill'>✅ {correct}/{total}</span>"
-        f"<span class='kpi-pill'>⏱ {avg:.2f}s/Q</span>"
-        f"<span class='kpi-pill'>🕒 {time_spent:.0f}s</span>"
-        f"<span class='kpi-pill'>🔥 {streak}d</span>"
-        f"</div>",
-        unsafe_allow_html=True
+      f"""
+      <div class="kpi-grid">
+        <div class="kpi"><div class="v">{correct}/{total}</div><div class="l">Correct</div></div>
+        <div class="kpi"><div class="v">{avg:.2f}s</div><div class="l">Avg time/Q</div></div>
+        <div class="kpi"><div class="v">{time_spent:.0f}s</div><div class="l">Time spent</div></div>
+        <div class="kpi"><div class="v">{streak}d</div><div class="l">Streak</div></div>
+      </div>
+      """,
+      unsafe_allow_html=True
     )
 
     # Per-Q now (tiny)
@@ -893,7 +898,7 @@ def screen_results():
     else:
         st.markdown("<div class='mini-caption'>No recent history yet — complete a few sessions to see your progress.</div>", unsafe_allow_html=True)
 
-    # Move long lists into a collapsible section to keep page above the fold
+    # Collapsible details
     with st.expander("More details", expanded=False):
         carried = ss.revisit_loaded
         st.write("Carried over: " + (", ".join(f"{a}×{b}" for (a, b) in carried) if carried else "None."))
@@ -968,16 +973,25 @@ def screen_assign():
           var span = document.getElementById('fullurl'); span.innerHTML = '';
           span.appendChild(a);
 
+          // Responsive QR: size to container width (min 140, max 420)
+          var q = document.getElementById('qrcode');
+          q.innerHTML = '';
+          var width = 320;
+          try {{
+            var w = q.parentElement.getBoundingClientRect().width || 320;
+            width = Math.max(140, Math.min(420, Math.floor(w - 16)));
+          }} catch (e) {{}}
+
           var s = document.createElement('script');
           s.src = "https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js";
           s.onload = function(){{
-            try {{ new QRCode(document.getElementById('qrcode'), {{ text: abs, width: 180, height: 180 }}); }}
-            catch (e) {{ document.getElementById('qrcode').innerHTML = '<em>Could not render QR.</em>'; }}
+            try {{ new QRCode(q, {{ text: abs, width: width, height: width }}); }}
+            catch (e) {{ q.innerHTML = '<em>Could not render QR.</em>'; }}
           }};
           document.currentScript.parentNode.appendChild(s);
         }})();
       </script>
-    """, height=280)
+    """, height=360)
 
     if st.button("Back to Start", use_container_width=True):
         st.session_state.screen = "start"; st.rerun()

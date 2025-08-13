@@ -2,7 +2,7 @@
 # Features: Numeric keypad (custom or fallback), auto-submit, spaced repetition,
 # Discord webhook, cookies (settings, history, streak, revisit), adaptive timing,
 # URL-parameter bootstrap for initial settings, Assign page with sharable link + QR.
-# Version: v1.22.0
+# Version: v1.23.0
 
 import os
 import time
@@ -20,7 +20,8 @@ import pandas as pd
 from streamlit.components.v1 import declare_component, html as st_html
 from streamlit_cookies_manager import EncryptedCookieManager  # robust cookies
 
-APP_VERSION = "v1.22.0"
+APP_VERSION = "v1.23.0"
+DEFAULT_BASE_URL = "https://times-tables-from-chalkface.streamlit.app/"
 
 # Note on st.cache deprecation: this script does NOT use st.cache.
 warnings.filterwarnings("ignore", message=r"`st\.cache` is deprecated")
@@ -49,6 +50,20 @@ def _secret_webhook() -> str | None:
         return st.secrets["discord"]["webhook"]
     except Exception:
         return None
+
+def _public_base_url() -> str | None:
+    # Safe: never crash if secrets.toml is missing locally
+    try:
+        v = st.secrets.get("public_base_url")
+        if v: return str(v)
+    except Exception:
+        pass
+    try:
+        v = st.secrets["general"]["public_base_url"]
+        if v: return str(v)
+    except Exception:
+        pass
+    return None
 
 # ---------------- Page config + light CSS ----------------
 st.set_page_config(page_title="Times Tables Trainer", page_icon="✳️",
@@ -105,7 +120,7 @@ COOKIE_PREFIX = "ttt/"
 COOKIE_SETTINGS_KEY = "settings"
 COOKIE_HISTORY_KEY = "history"
 COOKIE_STREAK_KEY = "streak"
-COOKIE_REVISIT_KEY = "revisit"   # {"v":1,"min":int,"max":int,"items":[[a,b],...]}
+COOKIE_REVISIT_KEY = "revisit"
 
 cookies = EncryptedCookieManager(
     prefix=COOKIE_PREFIX,
@@ -388,7 +403,7 @@ def _register_keypad_component():
 _register_keypad_component()
 
 # ---------------- Core logic ----------------
-MULTIPLIERS = list(range(1, 13))  # keep 1..12 multipliers; "table" (a) can be >12
+MULTIPLIERS = list(range(1, 13))  # multipliers stay 1..12; "table" (a) may exceed 12
 FAST_FRAC = 1.0/3.0
 SLOW_FRAC = 2.0/3.0
 MIN_PER_Q = 2
@@ -497,7 +512,7 @@ def _start_session():
     ss.pending_correct = False
     ss.shake_until = 0.0
     ss.ok_until = 0.0
-    ss.last_kp_seq = -1           # accept fresh keypad sequence after start
+    ss.last_kp_seq = -1
     _revisit_prepare_for_session()
     _new_question()
     ss.screen = "practice"; ss.needs_rerun = True
@@ -535,7 +550,7 @@ def _record_question(correct: bool, timed_out: bool):
     if correct and duration <= FAST_FRAC * float(ss.per_q):
         ss.per_q = _clamp_per_q(ss.per_q * 0.9)    # speed up
     elif duration >= SLOW_FRAC * float(ss.per_q):
-        ss.per_q = _clamp_per_q(ss.per_q * 1.1)    # slow down (regardless of correctness)
+        ss.per_q = _clamp_per_q(ss.per_q * 1.1)    # slow down
 
     if correct:
         ss.correct_questions += 1
@@ -628,13 +643,39 @@ def _debug_cookies_expander(title="Debug: cookies"):
         st.write("**revisit (parsed):**", parsed_r)
         st.write("**session_state.per_q (live):**", st.session_state.get("per_q"))
 
+# ---------------- Helpers for Start/Assign ----------------
+def _current_params_from_state() -> dict:
+    ss = st.session_state
+    params = {
+        "min": int(ss.min_table),
+        "max": int(ss.max_table),
+        "per_q": int(_clamp_per_q(ss.per_q)),
+        "minutes": int(ss.total_seconds // 60),
+        "screen": "start",
+    }
+    if ss.user and ss.user.strip():
+        params["user"] = ss.user.strip()
+    if DEBUG:
+        params["debug"] = "1"
+    return params
+
+def _set_url_params(params: dict):
+    # Update the browser URL (same tab) with the given params
+    try:
+        st.query_params = params  # modern API
+    except Exception:
+        try:
+            st.experimental_set_query_params(**params)  # fallback
+        except Exception:
+            pass
+
 # ---------------- Screens ----------------
 def screen_start():
     st.write("### Start")
     if KP_LOAD_ERROR: st.info(f"Keypad component: {KP_LOAD_ERROR}. Using fallback keypad.", icon="ℹ️")
     if DEBUG: _debug_cookies_expander()
 
-    # ——— Widgets live (no form) so Assign uses currently visible values
+    # Live widgets (no form) so Assign uses current visible values
     st.session_state.user = st.text_input("User (required)", st.session_state.user,
                                           max_chars=32, placeholder="Name or ID",
                                           help="Saved on this device.")
@@ -648,7 +689,7 @@ def screen_start():
         st.session_state.max_table = int(st.number_input("Max table", min_value=1,
                                                          value=st.session_state.max_table, step=1))
 
-    # Row: per_q / minutes side-by-side (kept simple)
+    # Row: per_q / minutes side-by-side
     c_pq, c_mins = st.columns([1, 1], gap="small")
     with c_pq:
         st.session_state.per_q = int(st.number_input("Seconds per question",
@@ -662,12 +703,20 @@ def screen_start():
     if st.session_state.min_table > st.session_state.max_table:
         st.session_state.min_table, st.session_state.max_table = st.session_state.max_table, st.session_state.min_table
 
+    # Primary Start
     if st.button("Start", type="primary", use_container_width=True):
         if not st.session_state.user or not st.session_state.user.strip():
             st.error("Please enter a User name to continue.")
         else:
             _cookies_save_current_settings()
             _start_session(); st.rerun()
+
+    # Footer with a live Assign link that carries current visible values
+    assign_params = _current_params_from_state()
+    assign_params["screen"] = "assign"
+    assign_qs = urlencode(assign_params)
+    st.caption(f"Times Tables Trainer {APP_VERSION} from The Chalkface Project. "
+               f"[Assign](?{assign_qs})")
 
 def render_fallback_keypad():
     rows = [["1","2","3"], ["4","5","6"], ["7","8","9"], ["C","0","B"]]
@@ -795,37 +844,19 @@ def screen_results():
         ss.last_kp_seq = -1
         st.rerun()
 
-def _current_params_from_state() -> dict:
-    ss = st.session_state
-    params = {
-        "min": int(ss.min_table),
-        "max": int(ss.max_table),
-        "per_q": int(_clamp_per_q(ss.per_q)),
-        "minutes": int(ss.total_seconds // 60),
-        "screen": "start",
-    }
-    if ss.user and ss.user.strip():
-        params["user"] = ss.user.strip()
-    if DEBUG:
-        params["debug"] = "1"
-    return params
-
 def screen_assign():
     st.write("### Assign")
     ss = st.session_state
 
+    # Use the currently visible Start values (they are in session_state)
     params = _current_params_from_state()
+    params["screen"] = "start"  # link returns to Start on the learner's device
     qs = urlencode(params)
 
-    # Instruction text
     st.write("Copy this link and send it to the learner. They can also grab it from the QR code below.")
 
-    # Absolute link + QR (computed from top window; fallback to PUBLIC_BASE_URL or default cloud URL)
-    fallback_base = (
-        os.getenv("PUBLIC_BASE_URL")
-        or st.secrets.get("public_base_url", "")
-        or "https://times-tables-from-chalkface.streamlit.app/"
-    )
+    # Choose a base URL: prefer window.top in the browser; otherwise env/secrets; otherwise DEFAULT
+    fallback_base = os.getenv("PUBLIC_BASE_URL") or _public_base_url() or DEFAULT_BASE_URL
 
     st_html(f"""
       <div id="assign-wrap" style="margin-top:8px">
@@ -837,7 +868,6 @@ def screen_assign():
           var qs = {json.dumps(qs)};
           var base = "";
           try {{
-            // Prefer the top-level window (avoids 'about:srcdoc' / 'nullsrcdoc')
             var topLoc = window.top && window.top.location;
             if (topLoc) {{
               base = topLoc.origin + topLoc.pathname;
@@ -846,24 +876,17 @@ def screen_assign():
           if (!base || base.startsWith("null") || base.includes("srcdoc")) {{
             base = {json.dumps(fallback_base)};
           }}
-          if (base && base.slice(-1) === "/") {{
-            // Streamlit app root normally ends with '/', keep it
-          }}
           var abs = base + (qs ? ("?" + qs) : "");
           var a = document.createElement('a');
-          a.href = abs; a.target = '_blank'; a.rel = 'noopener'; a.textContent = abs;
+          a.href = abs; a.rel = 'noopener'; a.textContent = abs;
           var span = document.getElementById('fullurl'); span.innerHTML = '';
           span.appendChild(a);
 
-          // QR
           var s = document.createElement('script');
           s.src = "https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js";
           s.onload = function(){{
-            try {{
-              new QRCode(document.getElementById('qrcode'), {{ text: abs, width: 180, height: 180 }});
-            }} catch (e) {{
-              document.getElementById('qrcode').innerHTML = '<em>Could not render QR.</em>';
-            }}
+            try {{ new QRCode(document.getElementById('qrcode'), {{ text: abs, width: 180, height: 180 }}); }}
+            catch (e) {{ document.getElementById('qrcode').innerHTML = '<em>Could not render QR.</em>'; }}
           }};
           document.currentScript.parentNode.appendChild(s);
         }})();
@@ -888,10 +911,10 @@ def _render():
     if st.session_state.screen == "practice":
         st.caption(f"Times Tables Trainer {APP_VERSION} — per-Q: {int(st.session_state.per_q)}s")
     elif st.session_state.screen == "start":
-        st.caption(f"Times Tables Trainer {APP_VERSION} from The Chalkface Project. "
-                   f"[Assign](?screen=assign)")
-    elif st.session_state.screen == "assign":
-        st.caption(f"Times Tables Trainer {APP_VERSION} from The Chalkface Project")
+        # Live Assign link that includes current visible values (same-tab navigation)
+        assign_params = _current_params_from_state(); assign_params["screen"] = "assign"
+        assign_qs = urlencode(assign_params)
+        st.caption(f"Times Tables Trainer {APP_VERSION} from The Chalkface Project. [Assign](?{assign_qs})")
     else:
         st.caption(f"Times Tables Trainer {APP_VERSION} from The Chalkface Project")
 

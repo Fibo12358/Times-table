@@ -2,7 +2,7 @@
 # Features: Numeric keypad (custom or fallback), auto-submit, spaced repetition,
 # Discord webhook, cookies (settings, history, streak, revisit), adaptive timing,
 # URL-parameter bootstrap for initial settings, Assign page with sharable link + QR.
-# Version: v1.29.0
+# Version: v1.30.0
 
 import os
 import time
@@ -21,7 +21,7 @@ import altair as alt
 from streamlit.components.v1 import declare_component, html as st_html
 from streamlit_cookies_manager import EncryptedCookieManager  # robust cookies
 
-APP_VERSION = "v1.29.0"
+APP_VERSION = "v1.30.0"
 DEFAULT_BASE_URL = "https://times-tables-from-chalkface.streamlit.app/"
 
 # Note on st.cache deprecation: this script does NOT use st.cache.
@@ -92,8 +92,8 @@ if not DEBUG:
 
 st.markdown("""
 <style>
-  /* Tighter global layout */
-  .block-container{ max-width: 480px !important; padding: 4px 8px !important; }
+  /* Tighter global layout + extra bottom padding to clear fixed session bar */
+  .block-container{ max-width: 480px !important; padding: 4px 8px 72px !important; }
   [data-testid="stVerticalBlock"]{ gap: 6px !important; } /* compact vertical gaps */
   .element-container{ padding-top: 0.1rem !important; padding-bottom: 0.1rem !important; }
 
@@ -105,13 +105,13 @@ st.markdown("""
     --amber:#f59e0b; --amber2:#fbbf24;
   }
 
-  /* Tiny titlebar for Start */
+  /* Tiny titlebar (minimise top whitespace) */
   .tt-title{ font-weight:700; font-size:1rem; margin:2px 0 2px; color:#334155; }
 
   /* Practice prompt + answer — compact on small screens */
-  .tt-prompt h1 { font-size: clamp(40px, 15vw, 80px); line-height: 1; margin: 0px 0 4px; text-align:center; }
+  .tt-prompt h1 { font-size: clamp(40px, 15vw, 80px); line-height: 1; margin: 0px 0 2px; text-align:center; }
   @media (max-width: 420px){ .tt-prompt h1{ font-size: clamp(36px, 14vw, 64px); } }
-  .answer-display{ font-size:1.6rem; font-weight:700; text-align:center; padding:.28rem .5rem; border:2px solid var(--slate-bd); border-radius:.6rem; background:#ffffff; margin:2px 0 4px; }
+  .answer-display{ font-size:1.6rem; font-weight:700; text-align:center; padding:.24rem .5rem; border:2px solid var(--slate-bd); border-radius:.6rem; background:#ffffff; margin:2px 0 2px; }
   .answer-display.ok{ background:var(--ok-bg); border:3px dashed var(--ok-bd); color:var(--ok-fg); }
   .answer-display.bad{ background:var(--bad-bg); border:3px solid var(--bad-bd); color:var(--bad-fg); }
 
@@ -119,23 +119,24 @@ st.markdown("""
   .stButton>button[kind="primary"]{ background:var(--blue) !important; color:#ffffff !important; border:none !important; font-weight:700; width:100%; min-height:44px; }
   .stButton>button{ min-height:40px; width:100%; }
 
-  /* Bars — slimmer + minimal labels */
+  /* Bars — slimmer + minimal spacing */
   .barwrap{ background:#e5e7eb; border:1px solid #cbd5e1; border-radius:10px; height:6px; overflow:hidden; }
-  .barlabel{ display:flex; justify-content:space-between; font-size:.78rem; color:var(--muted); margin:2px 2px 2px; }
+  .barlabel{ display:flex; justify-content:space-between; font-size:.78rem; color:var(--muted); margin:0 2px 2px; }
   .barfill-q{ background:linear-gradient(90deg, var(--amber), var(--amber2)); height:100%; width:0%; transition:width .12s linear; }
   .barfill-s{ background:linear-gradient(90deg, var(--blue), var(--blue2)); height:100%; width:0%; transition:width .12s linear; }
 
-  /* Sticky session bar at bottom for Practice */
-  .sticky-bottom{ position: sticky; bottom: 0; background: #ffffff; padding-top: 4px; padding-bottom: 2px; z-index: 2; }
+  /* Fixed session bar (always visible, centred to content width) */
+  .fixed-bottom{ position: fixed; left: 0; right: 0; bottom: 0; background: #ffffff; z-index: 1000; border-top:1px solid #e5e7eb; }
+  .fixed-bottom .inner{ max-width: 480px; margin: 0 auto; padding: 4px 8px 6px; }
 
-  /* Results — CSS Grid tiles (2×2, never collapses to 1×4) */
+  /* Results — CSS Grid tiles (2×2) */
   .kpi-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin:4px 0;}
   .kpi{border:1px solid #cbd5e1;border-radius:8px;padding:6px 8px;background:#fff}
   .kpi .v{font-weight:700;font-size:1.05rem;line-height:1}
   .kpi .l{font-size:.78rem;color:#64748b;margin-top:2px}
   @media (max-width:360px){.kpi .v{font-size:1rem}}
 
-  .mini-caption{ font-size: 0.78rem; color: var(--muted); margin-top: -6px; }
+  .mini-caption{ font-size: 0.78rem; color: var(--muted); margin-top: 6px; } /* add spacing above caption */
 </style>
 """, unsafe_allow_html=True)
 
@@ -631,7 +632,7 @@ def _q_bar(now_ts: float):
     q_total = max(1e-6, float(ss.per_q))
     q_left = max(0.0, (ss.q_deadline - now_ts) if ss.running else 0.0)
     q_pct = max(0.0, min(100.0, 100.0 * q_left / q_total))
-    st.markdown("<div class='barlabel'><span>Per-question</span></div>", unsafe_allow_html=True)
+    # Removed the label above the per-question bar to save vertical space
     st.markdown(f"<div class='barwrap'><div class='barfill-q' style='width:{q_pct:.0f}%'></div></div>", unsafe_allow_html=True)
 
 def _s_bar(now_ts: float):
@@ -639,11 +640,13 @@ def _s_bar(now_ts: float):
     s_total = max(1e-6, float(ss.total_seconds))
     s_left = max(0.0, (ss.deadline - now_ts) if ss.running else 0.0)
     s_pct = max(0.0, min(100.0, 100.0 * s_left / s_total))
-    # sticky wrapper keeps the session bar visible above the fold
+    # Fixed bottom bar (centred to content width)
     st.markdown(f"""
-<div class='sticky-bottom'>
-  <div class='barlabel'><span>Session</span></div>
-  <div class='barwrap'><div class='barfill-s' style='width:{s_pct:.0f}%'></div></div>
+<div class='fixed-bottom'>
+  <div class='inner'>
+    <div class='barlabel'><span>Session</span></div>
+    <div class='barwrap'><div class='barfill-s' style='width:{s_pct:.0f}%'></div></div>
+  </div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -790,7 +793,7 @@ def screen_practice():
     if not st.session_state.running and st.session_state.finished and st.session_state.screen != "results":
         st.session_state.screen = "results"; st.rerun(); return
 
-    # Compact top bar
+    # Compact top bar (label removed)
     _q_bar(now_ts)
 
     # Prompt / answer / keypad packed closely
@@ -838,7 +841,7 @@ def screen_practice():
         elif now_ts < st.session_state.shake_until: classes += ["bad","shake"]
         st.markdown(f"<div class='{' '.join(classes)}'>{st.session_state.entry or '&nbsp;'}</div>", unsafe_allow_html=True)
 
-    # Sticky Session bar at the very bottom, compact
+    # Fixed Session bar at the very bottom, compact and always visible
     _s_bar(now_ts)
 
     if st.session_state.running and _now() >= st.session_state.deadline:
@@ -864,8 +867,8 @@ def screen_results():
       unsafe_allow_html=True
     )
 
-    # Per-Q now (tiny)
-    st.markdown(f"<div class='mini-caption'>Per-question time now: {ss.per_q}s</div>", unsafe_allow_html=True)
+    # Per-Q now (with extra spacing to avoid overlap)
+    st.markdown(f"<div class='mini-caption' style='margin-top:8px'>Per-question time now: {ss.per_q}s</div>", unsafe_allow_html=True)
 
     # Side-by-side mini charts with tiny captions (serve as legends)
     df = _history_for_last_10_days()
@@ -924,7 +927,8 @@ def screen_results():
         st.rerun()
 
 def screen_assign():
-    st.write("### Assign")
+    # Minimal heading to remove excess top whitespace
+    st.markdown("<div class='tt-title'>Assign</div>", unsafe_allow_html=True)
 
     # Apply query params on entry and persist them immediately
     _apply_assign_qp_and_persist()
@@ -949,10 +953,11 @@ def screen_assign():
     # Choose a base URL: prefer window.top in the browser; otherwise env/secrets; otherwise DEFAULT
     fallback_base = os.getenv("PUBLIC_BASE_URL") or _public_base_url() or DEFAULT_BASE_URL
 
+    # Responsive, centred QR (w: up to 420) and taller iframe so it doesn't get clipped
     st_html(f"""
-      <div id="assign-wrap" style="margin-top:8px">
-        <p><strong>Full URL:</strong> <span id="fullurl"></span></p>
-        <div id="qrcode" style="margin-top:8px;"></div>
+      <div id="assign-wrap" style="margin-top:4px">
+        <p style="margin:4px 0"><strong>Full URL:</strong> <span id="fullurl"></span></p>
+        <div id="qrcode" style="margin-top:8px; display:flex; justify-content:center; align-items:center;"></div>
       </div>
       <script>
         (function() {{
@@ -973,7 +978,6 @@ def screen_assign():
           var span = document.getElementById('fullurl'); span.innerHTML = '';
           span.appendChild(a);
 
-          // Responsive QR: size to container width (min 140, max 420)
           var q = document.getElementById('qrcode');
           q.innerHTML = '';
           var width = 320;
@@ -991,7 +995,7 @@ def screen_assign():
           document.currentScript.parentNode.appendChild(s);
         }})();
       </script>
-    """, height=360)
+    """, height=520)
 
     if st.button("Back to Start", use_container_width=True):
         st.session_state.screen = "start"; st.rerun()

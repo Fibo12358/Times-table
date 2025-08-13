@@ -2,7 +2,7 @@
 # Features: Numeric keypad (custom or fallback), auto-submit, spaced repetition,
 # Discord webhook, cookies (settings, history, streak, revisit), adaptive timing,
 # URL-parameter bootstrap for initial settings, Assign page with sharable link + QR.
-# Version: v1.21.0
+# Version: v1.22.0
 
 import os
 import time
@@ -20,7 +20,7 @@ import pandas as pd
 from streamlit.components.v1 import declare_component, html as st_html
 from streamlit_cookies_manager import EncryptedCookieManager  # robust cookies
 
-APP_VERSION = "v1.21.0"
+APP_VERSION = "v1.22.0"
 
 # Note on st.cache deprecation: this script does NOT use st.cache.
 warnings.filterwarnings("ignore", message=r"`st\.cache` is deprecated")
@@ -353,7 +353,6 @@ def _apply_url_settings_from_qp_once() -> bool:
     if ss.min_table > ss.max_table:
         ss.min_table, ss.max_table = ss.max_table, ss.min_table
 
-    # Optional: direct screen jump (for Assign link etc.)
     screen_q = (_qp_scalar("screen") or "").strip().lower()
     if screen_q in ("start", "practice", "results", "assign"):
         ss.screen = screen_q
@@ -555,7 +554,6 @@ def _record_question(correct: bool, timed_out: bool):
 
     ss.awaiting_answer = False
 
-    # If time already up, end immediately; otherwise next question
     if _now() >= ss.deadline:
         _end_session()
     else:
@@ -636,35 +634,40 @@ def screen_start():
     if KP_LOAD_ERROR: st.info(f"Keypad component: {KP_LOAD_ERROR}. Using fallback keypad.", icon="ℹ️")
     if DEBUG: _debug_cookies_expander()
 
-    with st.form("start_form", clear_on_submit=False):
-        # Column layout: make Min and Max adjacent (same column)
-        c1, c2 = st.columns([1, 1], gap="small")
-        with c1:
-            st.session_state.user = st.text_input("User (required)", st.session_state.user,
-                                                  max_chars=32, placeholder="Name or ID",
-                                                  help="Saved on this device.")
-            st.session_state.min_table = int(st.number_input("Min table", min_value=1,
-                                                             value=st.session_state.min_table, step=1))
-            st.session_state.max_table = int(st.number_input("Max table", min_value=1,
-                                                             value=st.session_state.max_table, step=1))
-        with c2:
-            st.session_state.per_q = _clamp_per_q(st.number_input("Seconds per question",
-                                                                   min_value=MIN_PER_Q, max_value=MAX_PER_Q,
-                                                                   value=int(st.session_state.per_q), step=1))
+    # ——— Widgets live (no form) so Assign uses currently visible values
+    st.session_state.user = st.text_input("User (required)", st.session_state.user,
+                                          max_chars=32, placeholder="Name or ID",
+                                          help="Saved on this device.")
+
+    # Row: Min/Max side-by-side
+    c_min, c_max = st.columns([1, 1], gap="small")
+    with c_min:
+        st.session_state.min_table = int(st.number_input("Min table", min_value=1,
+                                                         value=st.session_state.min_table, step=1))
+    with c_max:
+        st.session_state.max_table = int(st.number_input("Max table", min_value=1,
+                                                         value=st.session_state.max_table, step=1))
+
+    # Row: per_q / minutes side-by-side (kept simple)
+    c_pq, c_mins = st.columns([1, 1], gap="small")
+    with c_pq:
+        st.session_state.per_q = int(st.number_input("Seconds per question",
+                                                     min_value=MIN_PER_Q, max_value=MAX_PER_Q,
+                                                     value=int(st.session_state.per_q), step=1))
+    with c_mins:
         mins = st.number_input("Session minutes", min_value=0, max_value=180,
                                value=st.session_state.total_seconds // 60, step=1)
         st.session_state.total_seconds = int(mins) * 60
 
-        if st.session_state.min_table > st.session_state.max_table:
-            st.session_state.min_table, st.session_state.max_table = st.session_state.max_table, st.session_state.min_table
+    if st.session_state.min_table > st.session_state.max_table:
+        st.session_state.min_table, st.session_state.max_table = st.session_state.max_table, st.session_state.min_table
 
-        start_clicked = st.form_submit_button("Start", type="primary", use_container_width=True)
-        if start_clicked:
-            if not st.session_state.user or not st.session_state.user.strip():
-                st.error("Please enter a User name to continue.")
-            else:
-                _cookies_save_current_settings()
-                _start_session(); st.rerun()
+    if st.button("Start", type="primary", use_container_width=True):
+        if not st.session_state.user or not st.session_state.user.strip():
+            st.error("Please enter a User name to continue.")
+        else:
+            _cookies_save_current_settings()
+            _start_session(); st.rerun()
 
 def render_fallback_keypad():
     rows = [["1","2","3"], ["4","5","6"], ["7","8","9"], ["C","0","B"]]
@@ -792,53 +795,78 @@ def screen_results():
         ss.last_kp_seq = -1
         st.rerun()
 
-def screen_assign():
-    st.write("### Assign")
+def _current_params_from_state() -> dict:
     ss = st.session_state
-    # Build params from current state
     params = {
-        "user": ss.user or "",
         "min": int(ss.min_table),
         "max": int(ss.max_table),
         "per_q": int(_clamp_per_q(ss.per_q)),
         "minutes": int(ss.total_seconds // 60),
-        # keep debug if present so you can inspect on target device
-        **({"debug": "1"} if DEBUG else {}),
         "screen": "start",
     }
-    # Remove empty user from params if blank
-    if not params["user"]:
-        params.pop("user", None)
+    if ss.user and ss.user.strip():
+        params["user"] = ss.user.strip()
+    if DEBUG:
+        params["debug"] = "1"
+    return params
 
+def screen_assign():
+    st.write("### Assign")
+    ss = st.session_state
+
+    params = _current_params_from_state()
     qs = urlencode(params)
-    rel = "?" + qs
 
-    st.write("Use this link to open the app with these settings prefilled:")
-    st.code(rel, language="text")
-    st.link_button("Open with these settings", rel, use_container_width=True)
+    # Instruction text
+    st.write("Copy this link and send it to the learner. They can also grab it from the QR code below.")
 
-    # Absolute link + QR (computed client-side to capture the correct host/path)
+    # Absolute link + QR (computed from top window; fallback to PUBLIC_BASE_URL or default cloud URL)
+    fallback_base = (
+        os.getenv("PUBLIC_BASE_URL")
+        or st.secrets.get("public_base_url", "")
+        or "https://times-tables-from-chalkface.streamlit.app/"
+    )
+
     st_html(f"""
-      <div id="assign-wrap" style="margin-top:12px">
+      <div id="assign-wrap" style="margin-top:8px">
         <p><strong>Full URL:</strong> <span id="fullurl"></span></p>
         <div id="qrcode" style="margin-top:8px;"></div>
       </div>
       <script>
-        const qs = {json.dumps(qs)};
-        const abs = window.location.origin + window.location.pathname + '?' + qs;
-        const a = document.createElement('a');
-        a.href = abs; a.target = '_blank'; a.rel = 'noopener'; a.textContent = abs;
-        const span = document.getElementById('fullurl'); span.innerHTML = '';
-        span.appendChild(a);
-      </script>
-      <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-      <script>
-        try {{
-          new QRCode(document.getElementById('qrcode'), {{ text: window.location.origin + window.location.pathname + '?{qs}', width: 180, height: 180 }});
-        }} catch (e) {{
-          const q = document.getElementById('qrcode');
-          q.innerHTML = '<em>Couldn\\'t render QR in this environment.</em>';
-        }}
+        (function() {{
+          var qs = {json.dumps(qs)};
+          var base = "";
+          try {{
+            // Prefer the top-level window (avoids 'about:srcdoc' / 'nullsrcdoc')
+            var topLoc = window.top && window.top.location;
+            if (topLoc) {{
+              base = topLoc.origin + topLoc.pathname;
+            }}
+          }} catch (e) {{}}
+          if (!base || base.startsWith("null") || base.includes("srcdoc")) {{
+            base = {json.dumps(fallback_base)};
+          }}
+          if (base && base.slice(-1) === "/") {{
+            // Streamlit app root normally ends with '/', keep it
+          }}
+          var abs = base + (qs ? ("?" + qs) : "");
+          var a = document.createElement('a');
+          a.href = abs; a.target = '_blank'; a.rel = 'noopener'; a.textContent = abs;
+          var span = document.getElementById('fullurl'); span.innerHTML = '';
+          span.appendChild(a);
+
+          // QR
+          var s = document.createElement('script');
+          s.src = "https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js";
+          s.onload = function(){{
+            try {{
+              new QRCode(document.getElementById('qrcode'), {{ text: abs, width: 180, height: 180 }});
+            }} catch (e) {{
+              document.getElementById('qrcode').innerHTML = '<em>Could not render QR.</em>';
+            }}
+          }};
+          document.currentScript.parentNode.appendChild(s);
+        }})();
       </script>
     """, height=280)
 
@@ -860,11 +888,12 @@ def _render():
     if st.session_state.screen == "practice":
         st.caption(f"Times Tables Trainer {APP_VERSION} — per-Q: {int(st.session_state.per_q)}s")
     elif st.session_state.screen == "start":
-        # Start-page footer per request, with same caption styling + Assign link
         st.caption(f"Times Tables Trainer {APP_VERSION} from The Chalkface Project. "
                    f"[Assign](?screen=assign)")
+    elif st.session_state.screen == "assign":
+        st.caption(f"Times Tables Trainer {APP_VERSION} from The Chalkface Project")
     else:
-        st.caption(f"Times Tables Trainer {APP_VERSION}")
+        st.caption(f"Times Tables Trainer {APP_VERSION} from The Chalkface Project")
 
     if st.session_state.needs_rerun:
         st.session_state.needs_rerun = False; st.rerun()

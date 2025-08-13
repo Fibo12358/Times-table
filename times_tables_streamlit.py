@@ -2,7 +2,7 @@
 # Features: Numeric keypad (custom or fallback), auto-submit, spaced repetition,
 # Discord webhook, cookies (settings, history, streak, revisit), adaptive timing,
 # URL-parameter bootstrap for initial settings, Assign page with sharable link + QR.
-# Version: v1.23.0
+# Version: v1.26.0
 
 import os
 import time
@@ -17,10 +17,11 @@ from urllib.parse import urlencode
 import requests
 import streamlit as st
 import pandas as pd
+import altair as alt
 from streamlit.components.v1 import declare_component, html as st_html
 from streamlit_cookies_manager import EncryptedCookieManager  # robust cookies
 
-APP_VERSION = "v1.23.0"
+APP_VERSION = "v1.26.0"
 DEFAULT_BASE_URL = "https://times-tables-from-chalkface.streamlit.app/"
 
 # Note on st.cache deprecation: this script does NOT use st.cache.
@@ -112,6 +113,11 @@ st.markdown("""
   .barlabel{ display:flex; justify-content:space-between; font-size:.86rem; color:var(--muted); margin:6px 2px 6px; }
   .barfill-q{ background:linear-gradient(90deg, var(--amber), var(--amber2)); height:100%; width:0%; transition:width .12s linear; }
   .barfill-s{ background:linear-gradient(90deg, var(--blue), var(--blue2)); height:100%; width:0%; transition:width .12s linear; }
+  /* Results compaction */
+  .compact-metrics .stMetric { padding: 0.25rem 0.25rem !important; }
+  .compact-metrics [data-testid="stMetricLabel"] { font-size: 0.85rem !important; }
+  .compact-metrics [data-testid="stMetricValue"] { font-size: 1.1rem !important; }
+  .compact-metrics [data-testid="stMetricDelta"] { font-size: 0.8rem !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -120,7 +126,7 @@ COOKIE_PREFIX = "ttt/"
 COOKIE_SETTINGS_KEY = "settings"
 COOKIE_HISTORY_KEY = "history"
 COOKIE_STREAK_KEY = "streak"
-COOKIE_REVISIT_KEY = "revisit"
+COOKIE_REVISIT_KEY = "revisit"   # {"v":1,"min":int,"max":int,"items":[[a,b],...]}
 
 cookies = EncryptedCookieManager(
     prefix=COOKIE_PREFIX,
@@ -547,9 +553,9 @@ def _record_question(correct: bool, timed_out: bool):
     item = (ss.a, ss.b)
 
     # Adaptive timing
-    if correct and duration <= FAST_FRAC * float(ss.per_q):
+    if correct and duration <= (1.0/3.0) * float(ss.per_q):
         ss.per_q = _clamp_per_q(ss.per_q * 0.9)    # speed up
-    elif duration >= SLOW_FRAC * float(ss.per_q):
+    elif duration >= (2.0/3.0) * float(ss.per_q):
         ss.per_q = _clamp_per_q(ss.per_q * 1.1)    # slow down
 
     if correct:
@@ -651,7 +657,7 @@ def _current_params_from_state() -> dict:
         "max": int(ss.max_table),
         "per_q": int(_clamp_per_q(ss.per_q)),
         "minutes": int(ss.total_seconds // 60),
-        "screen": "start",
+        "screen": "assign",  # target the Assign screen
     }
     if ss.user and ss.user.strip():
         params["user"] = ss.user.strip()
@@ -660,7 +666,6 @@ def _current_params_from_state() -> dict:
     return params
 
 def _set_url_params(params: dict):
-    # Update the browser URL (same tab) with the given params
     try:
         st.query_params = params  # modern API
     except Exception:
@@ -669,18 +674,51 @@ def _set_url_params(params: dict):
         except Exception:
             pass
 
+def _apply_assign_qp_and_persist():
+    """Apply the current query params (when on Assign) into session_state and cookie."""
+    ss = st.session_state
+    qp = _get_qp()
+
+    def _int_or(default, name, mn=None, mx=None):
+        raw = qp.get(name)
+        if raw is None: return default
+        if isinstance(raw, (list, tuple)): raw = raw[0]
+        try: v = int(str(raw).strip())
+        except Exception: return default
+        if mn is not None: v = max(mn, v)
+        if mx is not None: v = min(mx, v)
+        return v
+
+    user_q = qp.get("user")
+    if isinstance(user_q, (list, tuple)): user_q = user_q[0]
+    if user_q is not None:
+        ss.user = str(user_q).strip()
+
+    ss.min_table = _int_or(ss.min_table, "min", 1, None)
+    ss.max_table = _int_or(ss.max_table, "max", 1, None)
+    ss.per_q = _int_or(ss.per_q, "per_q", MIN_PER_Q, MAX_PER_Q)
+    mins = _int_or(ss.total_seconds // 60, "minutes", 0, 180)
+    ss.total_seconds = int(mins) * 60
+
+    if ss.min_table > ss.max_table:
+        ss.min_table, ss.max_table = ss.max_table, ss.min_table
+
+    # Persist immediately so "Assign must save the changes" holds true
+    _cookies_save_current_settings()
+
 # ---------------- Screens ----------------
 def screen_start():
-    st.write("### Start")
+    # Title update
+    st.write("### Practice Times Tables")
     if KP_LOAD_ERROR: st.info(f"Keypad component: {KP_LOAD_ERROR}. Using fallback keypad.", icon="ℹ️")
     if DEBUG: _debug_cookies_expander()
 
-    # Live widgets (no form) so Assign uses current visible values
+    # Live widgets (no form)
     st.session_state.user = st.text_input("User (required)", st.session_state.user,
                                           max_chars=32, placeholder="Name or ID",
                                           help="Saved on this device.")
 
-    # Row: Min/Max side-by-side
+    # Row: Min/Max side-by-side (same row)
     c_min, c_max = st.columns([1, 1], gap="small")
     with c_min:
         st.session_state.min_table = int(st.number_input("Min table", min_value=1,
@@ -711,13 +749,6 @@ def screen_start():
             _cookies_save_current_settings()
             _start_session(); st.rerun()
 
-    # Footer with a live Assign link that carries current visible values
-    assign_params = _current_params_from_state()
-    assign_params["screen"] = "assign"
-    assign_qs = urlencode(assign_params)
-    st.caption(f"Times Tables Trainer {APP_VERSION} from The Chalkface Project. "
-               f"[Assign](?{assign_qs})")
-
 def render_fallback_keypad():
     rows = [["1","2","3"], ["4","5","6"], ["7","8","9"], ["C","0","B"]]
     for r, row in enumerate(rows):
@@ -732,6 +763,7 @@ def render_fallback_keypad():
                 cols[c].button("Back", key=key, use_container_width=True, on_click=_kp_apply, args=("B",))
 
 def screen_practice():
+    # Ensure only practice UI appears (no config fields)
     now_ts = _now()
     _tick(now_ts)  # may end the session
 
@@ -797,36 +829,64 @@ def screen_results():
     pct = int(round((100.0 * correct / total), 0)) if total else 0
     time_spent = ss.total_time_spent; streak = ss.streak_count
 
-    st.subheader("Results")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.metric("Correct", f"{correct}/{total}", f"{pct}%")
-        st.metric("Avg time / Q", f"{avg:0.2f} s")
-    with c2:
-        st.metric("Time spent", f"{time_spent:0.0f} s")
-        st.metric("Streak", f"{streak} day{'s' if streak != 1 else ''}")
+    # Compact metrics to minimise scrolling on phones
+    with st.container():
+        st.markdown("<div class='compact-metrics'>", unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.metric("Correct", f"{correct}/{total}", f"{pct}%")
+            st.metric("Avg time / Q", f"{avg:0.2f} s")
+        with c2:
+            st.metric("Time spent", f"{time_spent:0.0f} s")
+            st.metric("Streak", f"{streak} day{'s' if streak != 1 else ''}")
+        st.markdown("</div>", unsafe_allow_html=True)
 
     st.caption(f"Per-question time now: {ss.per_q}s")
 
-    st.write("#### Carried over this session")
+    # Carried / revisit lists (kept short)
     carried = ss.revisit_loaded
-    st.write(", ".join(f"{a}×{b}" for (a, b) in carried) if carried else "None.")
-
-    st.write("#### Items to revisit")
+    st.write("Carried over: " + (", ".join(f"{a}×{b}" for (a, b) in carried) if carried else "None."))
     wrong_any = sorted(list(set(ss.wrong_attempt_items)))
-    st.write(", ".join(
-        f"{a}×{b}{' (wrong twice)' if (a, b) in ss.wrong_twice else ''}"
-        for a, b in wrong_any
-    ) or "None.")
+    st.write("To revisit: " + (", ".join(
+        f"{a}×{b}{' (×2)' if (a, b) in ss.wrong_twice else ''}" for a, b in wrong_any
+    ) or "None."))
 
-    st.write("#### Progress (last 10 days)")
+    # Side-by-side compact charts (no section header; captions act as legends)
     df = _history_for_last_10_days()
-    if df.empty:
-        st.caption("No recent history yet — complete a few sessions to see your progress.")
+    if not df.empty:
+        c_left, c_right = st.columns(2, gap="small")
+
+        # Score chart
+        with c_left:
+            ch1 = (
+                alt.Chart(df)
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X("label:N", axis=alt.Axis(title=None, labelAngle=0)),
+                    y=alt.Y("pct:Q", axis=alt.Axis(title=None)),
+                    tooltip=[alt.Tooltip("label:N", title="Day"), alt.Tooltip("pct:Q", title="Score (%)")]
+                )
+                .properties(height=110)
+            )
+            st.altair_chart(ch1, use_container_width=True)
+            st.caption("Score")
+
+        # Avg time per Q
+        with c_right:
+            ch2 = (
+                alt.Chart(df)
+                .mark_line(point=True, color="#2563eb")
+                .encode(
+                    x=alt.X("label:N", axis=alt.Axis(title=None, labelAngle=0)),
+                    y=alt.Y("avg:Q", axis=alt.Axis(title=None)),
+                    tooltip=[alt.Tooltip("label:N", title="Day"), alt.Tooltip("avg:Q", title="Av. time (s)")]
+                )
+                .properties(height=110)
+            )
+            st.altair_chart(ch2, use_container_width=True)
+            st.caption("Av. time/question")
     else:
-        st.line_chart(df.set_index("label")[["pct"]].rename(columns={"pct": "% correct"}), height=120)
-        st.line_chart(df.set_index("label")[["avg"]].rename(columns={"avg": "avg sec / Q"}), height=120)
+        st.caption("No recent history yet — complete a few sessions to see your progress.")
 
     if DEBUG:
         _debug_cookies_expander("Debug: cookies (Results)")
@@ -846,11 +906,23 @@ def screen_results():
 
 def screen_assign():
     st.write("### Assign")
+
+    # Apply query params on entry and persist them immediately
+    _apply_assign_qp_and_persist()
     ss = st.session_state
 
-    # Use the currently visible Start values (they are in session_state)
-    params = _current_params_from_state()
-    params["screen"] = "start"  # link returns to Start on the learner's device
+    # Build link from the (now persisted) current state; learners land on Start
+    params = {
+        "user": ss.user or "",
+        "min": int(ss.min_table),
+        "max": int(ss.max_table),
+        "per_q": int(_clamp_per_q(ss.per_q)),
+        "minutes": int(ss.total_seconds // 60),
+        "screen": "start",
+        **({"debug": "1"} if DEBUG else {}),
+    }
+    if not params["user"]:
+        params.pop("user", None)
     qs = urlencode(params)
 
     st.write("Copy this link and send it to the learner. They can also grab it from the QR code below.")
@@ -896,25 +968,30 @@ def screen_assign():
     if st.button("Back to Start", use_container_width=True):
         st.session_state.screen = "start"; st.rerun()
 
-# ---------------- Router + heartbeat ----------------
+# ---------------- Router + single footer ----------------
 def _render():
     try:
         screen = st.session_state.screen
-        if screen == "start": screen_start()
-        elif screen == "practice": screen_practice()
-        elif screen == "assign": screen_assign()
-        else: screen_results()
+        if screen == "start":
+            screen_start()
+        elif screen == "practice":
+            screen_practice()
+        elif screen == "assign":
+            screen_assign()
+        else:
+            screen_results()
     except Exception as e:
         st.error("Unhandled exception while rendering."); st.exception(e)
 
-    # Footer (page-specific)
-    if st.session_state.screen == "practice":
-        st.caption(f"Times Tables Trainer {APP_VERSION} — per-Q: {int(st.session_state.per_q)}s")
-    elif st.session_state.screen == "start":
-        # Live Assign link that includes current visible values (same-tab navigation)
-        assign_params = _current_params_from_state(); assign_params["screen"] = "assign"
-        assign_qs = urlencode(assign_params)
-        st.caption(f"Times Tables Trainer {APP_VERSION} from The Chalkface Project. [Assign](?{assign_qs})")
+    # Footer:
+    if st.session_state.screen == "start":
+        # Text link 'Assign' that reflects CURRENT visible values (no button)
+        assign_qs = urlencode(_current_params_from_state())
+        st.caption(f"Times Tables Trainer {APP_VERSION} from The Chalkface Project. "
+                   f"[Assign](?{assign_qs})")
+    elif st.session_state.screen == "practice":
+        # No Assign control here
+        st.caption(f"Times Tables Trainer {APP_VERSION} from The Chalkface Project — per-Q: {int(st.session_state.per_q)}s")
     else:
         st.caption(f"Times Tables Trainer {APP_VERSION} from The Chalkface Project")
 

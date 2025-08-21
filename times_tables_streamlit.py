@@ -1,5 +1,3 @@
-Here’s the full script with a dark-mode–safe Results page. I added theme-aware CSS variables so the four KPI tiles (Correct, Avg time/Q, Time spent, Streak) have strong contrast in both light and dark modes. Version bumped.
-
 * **v1.31.0**
 
   * Results KPI tiles: high-contrast colours in dark mode via `@media (prefers-color-scheme: dark)` and CSS variables (`--kpi-bg`, `--kpi-bd`, `--kpi-v`, `--kpi-l`).
@@ -1075,4 +1073,3 @@ def _render():
         time.sleep(0.1); st.rerun()
 
 _render()
-```

@@ -1,9 +1,3 @@
-* **v1.31.0**
-
-  * Results KPI tiles: high-contrast colours in dark mode via `@media (prefers-color-scheme: dark)` and CSS variables (`--kpi-bg`, `--kpi-bd`, `--kpi-v`, `--kpi-l`).
-  * Also hooked captions and borders to the same variables so labels stay legible.
-
-```python
 # times_tables_streamlit.py — mobile-first, 3 screens (Start → Practice → Results) + Assign helper
 # Features: Numeric keypad (custom or fallback), auto-submit, spaced repetition,
 # Discord webhook, cookies (settings, history, streak, revisit), adaptive timing,
